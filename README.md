@@ -146,7 +146,7 @@ cmake --build build --config Release --parallel
 ```bash
 # Ensure gcc, g++, and make/ninja are in your PATH
 cmake -B build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j%NUMBER_OF_PROCESSORS%
+cmake --build build -j8
 ./build/Material_Design3_Edition
 ```
 
