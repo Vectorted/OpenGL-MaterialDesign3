@@ -139,7 +139,7 @@ Engineered for desktop applications, embedded systems, and custom rendering engi
 # Open "x64 Native Tools Command Prompt for VS"
 cmake -B build
 cmake --build build --config Release --parallel
-.\build\Release\Material_Design3_Edition
+./build/Release/Material_Design3_Edition
 ```
 
 ## MinGW-w64 Build (GCC/Clang)
@@ -147,7 +147,7 @@ cmake --build build --config Release --parallel
 # Ensure gcc, g++, and make/ninja are in your PATH
 cmake -B build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j%NUMBER_OF_PROCESSORS%
-./build/Material_Design3_Edition.exe
+./build/Material_Design3_Edition
 ```
 
 ---
