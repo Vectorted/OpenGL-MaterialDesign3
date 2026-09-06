@@ -15,7 +15,6 @@ Engineered for desktop applications, embedded systems, and custom rendering engi
 <p align="center">
   <img src="./docs/images/image3.png" alt="Material 3 Component Catalog Overview" width="100%"/>
   <br/>
-  <em><b>Figure:</b> Material 3 Component Catalog — Full Overview</em>
 </p>
 
 ---
