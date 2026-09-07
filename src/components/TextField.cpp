@@ -12,6 +12,7 @@
 
 #include "TextField.hpp"
 #include "../shader/TextureLoader.hpp"
+#include <glad/glad.h>
 #include <GLFW/glfw3.h>
 #include <algorithm>
 #include <cmath>
@@ -20,13 +21,84 @@
 extern void requestUIWakeup(double seconds);
 
 /**
- * @brief Ken Perlin C2-continuous Smootherstep easing function: 6t^5 - 15t^4 + 10t^3.
- * Guarantees zero first and second derivatives at boundaries for soft landings.
+ * @brief SmootherStep easing function for smooth interpolation (quintic Hermite).
+ * @param t Input value clamped to [0,1].
+ * @return Eased value.
  */
 static inline float md3SmootherStep(float t) {
     t = std::clamp(t, 0.0f, 1.0f);
     return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
 }
+
+/**
+ * @struct ScissorGuard
+ * @brief RAII guard that safely manages OpenGL scissor state, intersecting with parent scissor box and restoring on destruction.
+ * 
+ * Ensures that rendering is clipped to the desired rectangle while respecting any existing scissor restrictions,
+ * and automatically restores the previous state when the guard goes out of scope.
+ */
+struct ScissorGuard {
+    GLboolean wasEnabled = GL_FALSE; /**< Saved enabled state of GL_SCISSOR_TEST. */
+    GLint prevBox[4] = { 0, 0, 0, 0 }; /**< Saved scissor box [x, y, width, height]. */
+
+    /**
+     * @brief Constructs the guard and sets the scissor box to the intersection of the given rect and the parent scissor.
+     * @param x Left coordinate (screen space).
+     * @param y Bottom coordinate (screen space).
+     * @param w Width.
+     * @param h Height.
+     */
+    ScissorGuard(int x, int y, int w, int h) {
+        wasEnabled = glIsEnabled(GL_SCISSOR_TEST);
+        glGetIntegerv(GL_SCISSOR_BOX, prevBox);
+
+        if (w < 0) w = 0;
+        if (h < 0) h = 0;
+
+        int finalX = x;
+        int finalY = y;
+        int finalW = w;
+        int finalH = h;
+
+        if (wasEnabled) {
+            int pX1 = prevBox[0];
+            int pY1 = prevBox[1];
+            int pX2 = prevBox[0] + prevBox[2];
+            int pY2 = prevBox[1] + prevBox[3];
+
+            int cX1 = x;
+            int cY1 = y;
+            int cX2 = x + w;
+            int cY2 = y + h;
+
+            int iX1 = std::max(pX1, cX1);
+            int iY1 = std::max(pY1, cY1);
+            int iX2 = std::min(pX2, cX2);
+            int iY2 = std::min(pY2, cY2);
+
+            finalX = iX1;
+            finalY = iY1;
+            finalW = std::max(0, iX2 - iX1);
+            finalH = std::max(0, iY2 - iY1);
+        }
+
+        glEnable(GL_SCISSOR_TEST);
+        glScissor(finalX, finalY, finalW, finalH);
+    }
+
+    /**
+     * @brief Destructor restores the original scissor state (enable/disable and box).
+     */
+    ~ScissorGuard() {
+        if (wasEnabled) {
+            glScissor(prevBox[0], prevBox[1], prevBox[2], prevBox[3]);
+        } else {
+            glDisable(GL_SCISSOR_TEST);
+        }
+    }
+};
+
+// --- Constructor ---
 
 TextField::TextField() {
     layout_width = WRAP_CONTENT;
@@ -34,12 +106,15 @@ TextField::TextField() {
     m_labelSizeDp = 16.0f;  
 }
 
+// --- Public API implementations ---
+
 void TextField::setText(const std::string& text) {
     if (m_maxLength > 0 && (int)getUtf8Length(text) > m_maxLength) {
         std::string truncated;
+        truncated.reserve(m_maxLength * 2);
         size_t count = 0;
         for (size_t i = 0; i < text.length() && count < (size_t)m_maxLength; ) {
-            unsigned char c = text[i];
+            unsigned char c = static_cast<unsigned char>(text[i]);
             int len = 1;
             if ((c & 0x80) == 0x80) {
                 if ((c & 0xE0) == 0xC0) len = 2;
@@ -47,7 +122,7 @@ void TextField::setText(const std::string& text) {
                 else if ((c & 0xF8) == 0xF0) len = 4;
             }
             if (i + len <= text.length()) {
-                truncated += text.substr(i, len);
+                truncated.append(text, i, len);
                 count++;
             }
             i += len;
@@ -58,6 +133,7 @@ void TextField::setText(const std::string& text) {
         m_text = text;
     }
     m_cursorPos = (int)m_text.length();
+    m_offsetsDirty = true;
     clearSelection();
     updateDisplayText();
     if (m_onTextChanged) m_onTextChanged(m_text);
@@ -89,7 +165,10 @@ void TextField::setStyle(TextFieldStyle style) {
 }
 
 void TextField::setTextSize(float sizeDp) {
-    m_textSizeDp = sizeDp;
+    if (m_textSizeDp != sizeDp) {
+        m_textSizeDp = sizeDp;
+        m_offsetsDirty = true;
+    }
 }
 
 void TextField::setLabelSize(float sizeDp) {
@@ -104,9 +183,10 @@ void TextField::setMaxLength(int maxLen) {
     m_maxLength = maxLen;
     if (m_maxLength > 0 && (int)getUtf8Length(m_text) > m_maxLength) {
         std::string truncated;
+        truncated.reserve(m_maxLength * 2);
         size_t count = 0;
         for (size_t i = 0; i < m_text.length() && count < (size_t)m_maxLength; ) {
-            unsigned char c = m_text[i];
+            unsigned char c = static_cast<unsigned char>(m_text[i]);
             int len = 1;
             if ((c & 0x80) == 0x80) {
                 if ((c & 0xE0) == 0xC0) len = 2;
@@ -114,12 +194,14 @@ void TextField::setMaxLength(int maxLen) {
                 else if ((c & 0xF8) == 0xF0) len = 4;
             }
             if (i + len <= m_text.length()) {
-                truncated += m_text.substr(i, len);
+                truncated.append(m_text, i, len);
                 count++;
             }
             i += len;
         }
         m_text = truncated;
+        m_cursorPos = std::min(m_cursorPos, (int)m_text.length());
+        m_offsetsDirty = true;
         clearSelection();
         updateDisplayText();
     }
@@ -131,6 +213,7 @@ void TextField::setReadOnly(bool readonly) {
 
 void TextField::setPassword(bool password) {
     m_password = password;
+    m_offsetsDirty = true;
     updateDisplayText();
 }
 
@@ -204,6 +287,7 @@ void TextField::deleteSelection() {
     
     m_text.erase(s, e - s);
     m_cursorPos = s;
+    m_offsetsDirty = true;
     clearSelection();
     updateDisplayText();
     if (m_onTextChanged) m_onTextChanged(m_text);
@@ -225,9 +309,9 @@ void TextField::appendChar(char c) {
     if (hasSelection()) deleteSelection();
     if (m_maxLength > 0 && (int)getUtf8Length(m_text) >= m_maxLength) return;
 
-    std::string str(1, c);
-    m_text.insert(m_cursorPos, str);
-    m_cursorPos += (int)str.length();
+    m_text.insert(m_cursorPos, 1, c);
+    m_cursorPos += 1;
+    m_offsetsDirty = true;
     updateDisplayText();
     if (m_onTextChanged) m_onTextChanged(m_text);
 }
@@ -236,25 +320,32 @@ void TextField::appendString(const std::string& str) {
     if (m_readOnly || str.empty()) return;
     if (hasSelection()) deleteSelection();
 
-    size_t curLen = getUtf8Length(m_text);
-    size_t insLen = getUtf8Length(str);
+    std::string sanitized;
+    sanitized.reserve(str.length());
+    for (char c : str) {
+        if (c != '\r' && c != '\n') sanitized.push_back(c);
+        else sanitized.push_back(' ');
+    }
 
-    std::string validStr = str;
+    size_t curLen = getUtf8Length(m_text);
+    size_t insLen = getUtf8Length(sanitized);
+
+    std::string validStr = sanitized;
     if (m_maxLength > 0 && (int)(curLen + insLen) > m_maxLength) {
         int allow = m_maxLength - (int)curLen;
         if (allow <= 0) return;
-        validStr = "";
+        validStr.clear();
         int cnt = 0;
-        for (size_t i = 0; i < str.length() && cnt < allow;) {
-            unsigned char c = str[i];
+        for (size_t i = 0; i < sanitized.length() && cnt < allow;) {
+            unsigned char c = static_cast<unsigned char>(sanitized[i]);
             int len = 1;
             if ((c & 0x80) == 0x80) {
                 if ((c & 0xE0) == 0xC0) len = 2;
                 else if ((c & 0xF0) == 0xE0) len = 3;
                 else if ((c & 0xF8) == 0xF0) len = 4;
             }
-            if (i + len <= str.length()) {
-                validStr += str.substr(i, len);
+            if (i + len <= sanitized.length()) {
+                validStr.append(sanitized, i, len);
                 cnt++;
             }
             i += len;
@@ -263,6 +354,7 @@ void TextField::appendString(const std::string& str) {
 
     m_text.insert(m_cursorPos, validStr);
     m_cursorPos += (int)validStr.length();
+    m_offsetsDirty = true;
     updateDisplayText();
     if (m_onTextChanged) m_onTextChanged(m_text);
 }
@@ -276,7 +368,7 @@ void TextField::backspace() {
     if (m_text.empty() || m_cursorPos <= 0) return;
 
     int charLen = 1;
-    unsigned char c = m_text[m_cursorPos - 1];
+    unsigned char c = static_cast<unsigned char>(m_text[m_cursorPos - 1]);
     if ((c & 0x80) == 0x80) {
         int count = 0;
         for (int i = m_cursorPos - 1; i >= 0; --i) {
@@ -288,6 +380,7 @@ void TextField::backspace() {
 
     m_text.erase(m_cursorPos - charLen, charLen);
     m_cursorPos -= charLen;
+    m_offsetsDirty = true;
     updateDisplayText();
     if (m_onTextChanged) m_onTextChanged(m_text);
 }
@@ -296,6 +389,8 @@ void TextField::clear() {
     if (m_readOnly) return;
     m_text.clear();
     m_cursorPos = 0;
+    m_scrollOffset = 0.0f;
+    m_offsetsDirty = true;
     clearSelection();
     updateDisplayText();
     if (m_onTextChanged) m_onTextChanged(m_text);
@@ -304,7 +399,7 @@ void TextField::clear() {
 size_t TextField::getUtf8Length(const std::string& str) const {
     size_t len = 0;
     for (size_t i = 0; i < str.length(); ) {
-        unsigned char c = str[i];
+        unsigned char c = static_cast<unsigned char>(str[i]);
         if (c < 0x80) i += 1;
         else if ((c & 0xE0) == 0xC0) i += 2;
         else if ((c & 0xF0) == 0xE0) i += 3;
@@ -338,17 +433,89 @@ M3Color TextField::getLabelColor(const MaterialTheme& theme) const {
     return theme.onSurfaceVariant;
 }
 
-int TextField::getCharIndexAtX(float localTextX) const {
-    if (m_charByteOffsets.empty() || localTextX <= 0.0f) return 0;
-    if (localTextX >= m_charByteOffsets.back().second) return (int)m_text.length();
+void TextField::rebuildCharOffsets(MaterialShader& shader, float fontSize) {
+    if (!m_offsetsDirty) return;
+    m_offsetsDirty = false;
 
-    for (size_t i = 0; i < m_charByteOffsets.size() - 1; ++i) {
-        float x1 = m_charByteOffsets[i].second;
-        float x2 = m_charByteOffsets[i + 1].second;
-        float mid = (x1 + x2) * 0.5f;
-        if (localTextX < mid) return m_charByteOffsets[i].first;
+    m_charByteOffsets.clear();
+    m_charByteOffsets.push_back({ 0, 0.0f });
+
+    if (m_displayText.empty()) return;
+
+    // Single-pass incremental build of character X-offset table, O(N) linear cost.
+    float curOffset = 0.0f;
+    for (size_t i = 0; i < m_displayText.length(); ) {
+        unsigned char c = static_cast<unsigned char>(m_displayText[i]);
+        int len = 1;
+        if ((c & 0x80) == 0x80) {
+            if ((c & 0xE0) == 0xC0) len = 2;
+            else if ((c & 0xF0) == 0xE0) len = 3;
+            else if ((c & 0xF8) == 0xF0) len = 4;
+        }
+
+        std::string singleChar = m_displayText.substr(i, len);
+        curOffset += shader.getTextWidth(singleChar, fontSize);
+        i += len;
+        m_charByteOffsets.push_back({ static_cast<int>(i), curOffset });
     }
-    return (int)m_text.length();
+}
+
+void TextField::ensureCursorVisible(float maxTextWidth) {
+    if (maxTextWidth <= 0.0f || m_charByteOffsets.empty()) {
+        m_scrollOffset = 0.0f;
+        return;
+    }
+
+    // Binary search to locate cursor's pixel X.
+    float cursorX = 0.0f;
+    auto it = std::lower_bound(
+        m_charByteOffsets.begin(), m_charByteOffsets.end(), m_cursorPos,
+        [](const std::pair<int, float>& item, int pos) {
+            return item.first < pos;
+        }
+    );
+    if (it != m_charByteOffsets.end()) {
+        cursorX = it->second;
+    } else {
+        cursorX = m_charByteOffsets.back().second;
+    }
+
+    float leftBoundary = m_scrollOffset;
+    float rightBoundary = m_scrollOffset + maxTextWidth;
+
+    if (cursorX < leftBoundary) {
+        m_scrollOffset = cursorX;
+    } else if (cursorX > rightBoundary - dp(4.0f)) {
+        m_scrollOffset = cursorX - maxTextWidth + dp(8.0f);
+    }
+
+    float totalTextWidth = m_charByteOffsets.back().second;
+    if (totalTextWidth <= maxTextWidth) {
+        m_scrollOffset = 0.0f;
+    } else {
+        m_scrollOffset = std::clamp(m_scrollOffset, 0.0f, totalTextWidth - maxTextWidth + dp(8.0f));
+    }
+}
+
+int TextField::getCharIndexAtX(float localTextX) const {
+    if (m_charByteOffsets.empty()) return 0;
+    float searchX = localTextX + m_scrollOffset;
+    if (searchX <= 0.0f) return 0;
+    if (searchX >= m_charByteOffsets.back().second) return static_cast<int>(m_text.length());
+
+    auto it = std::lower_bound(
+        m_charByteOffsets.begin(), m_charByteOffsets.end(), searchX,
+        [](const std::pair<int, float>& item, float val) {
+            return item.second < val;
+        }
+    );
+
+    if (it == m_charByteOffsets.begin()) return 0;
+    if (it == m_charByteOffsets.end()) return static_cast<int>(m_text.length());
+
+    auto prev = it - 1;
+    float mid = (prev->second + it->second) * 0.5f;
+    return (searchX < mid) ? prev->first : it->first;
 }
 
 bool TextField::isInsideIconPos(float mx, float my, float iconCenterX, float iconCenterY, float hitRadius) {
@@ -362,9 +529,9 @@ void TextField::update(float dt) {
     float dtSafe = std::min(dt, 0.033f);
     bool needContinuousFrame = false;
 
-    // 1. Floating label animation: 200ms ascent, 160ms descent
+    // 1. Floating label transition
     float labelTarget = (!m_text.empty() || m_hasFocus) ? 1.0f : 0.0f;
-    if (m_labelAnim != labelTarget) {
+    if (std::abs(m_labelAnim - labelTarget) > 0.001f) {
         float speed = (labelTarget > m_labelAnim) ? (1.0f / 0.20f) : (1.0f / 0.16f);
         if (m_labelAnim < labelTarget) {
             m_labelAnim = std::min(labelTarget, m_labelAnim + speed * dtSafe);
@@ -372,11 +539,13 @@ void TextField::update(float dt) {
             m_labelAnim = std::max(labelTarget, m_labelAnim - speed * dtSafe);
         }
         needContinuousFrame = true;
+    } else {
+        m_labelAnim = labelTarget;
     }
 
-    // 2. Active indicator bar animation: 180ms expand, 140ms retract
+    // 2. Bottom indicator transition
     float indicatorTarget = (m_hasFocus || m_isHovering || m_state == TextFieldState::Error) ? 1.0f : 0.0f;
-    if (m_indicatorAnim != indicatorTarget) {
+    if (std::abs(m_indicatorAnim - indicatorTarget) > 0.001f) {
         float speed = (indicatorTarget > m_indicatorAnim) ? (1.0f / 0.18f) : (1.0f / 0.14f);
         if (m_indicatorAnim < indicatorTarget) {
             m_indicatorAnim = std::min(indicatorTarget, m_indicatorAnim + speed * dtSafe);
@@ -384,27 +553,33 @@ void TextField::update(float dt) {
             m_indicatorAnim = std::max(indicatorTarget, m_indicatorAnim - speed * dtSafe);
         }
         needContinuousFrame = true;
+    } else {
+        m_indicatorAnim = indicatorTarget;
     }
 
-    m_cursorBlink += dt;
-    if (m_cursorBlink > 1.25f) m_cursorBlink -= 1.25f;
+    // 3. Cursor blink and smooth animation
+    if (m_hasFocus && !m_readOnly) {
+        m_cursorBlink += dt;
+        if (m_cursorBlink > 1.25f) m_cursorBlink -= 1.25f;
 
-    if (m_targetCursorX >= 0.0f) {
-        if (m_smoothCursorX < 0.0f) {
-            m_smoothCursorX = m_targetCursorX;
-        } else {
-            float speed = 28.0f;
-            m_smoothCursorX += (m_targetCursorX - m_smoothCursorX) * std::min(1.0f, dtSafe * speed);
-            if (std::abs(m_targetCursorX - m_smoothCursorX) < 0.15f) {
+        if (m_targetCursorX >= 0.0f) {
+            if (m_smoothCursorX < 0.0f) {
                 m_smoothCursorX = m_targetCursorX;
             } else {
-                needContinuousFrame = true;
+                float diff = m_targetCursorX - m_smoothCursorX;
+                m_smoothCursorX += diff * (1.0f - std::exp(-28.0f * dtSafe));
+                if (std::abs(diff) < 0.15f) {
+                    m_smoothCursorX = m_targetCursorX;
+                }
             }
         }
+        needContinuousFrame = true;
+    } else {
+        m_cursorBlink = 0.0f;
     }
 
     if (needContinuousFrame) {
-        requestUIWakeup(0.0);
+        requestUIWakeup(0.1);
     }
 
     m_showClearIcon = m_hasFocus && !m_text.empty() && !isIconEmpty(m_clearIcon);
@@ -457,7 +632,6 @@ void TextField::renderOutlined(MaterialShader& shader, MaterialTheme& theme) {
     shader.drawM3UI(pX, pY, pW, pH, r, r, r, r, { 0,0,0,0 }, 0, 0, 0, 0, { 0,0,0,0 }, 0, 0, { 0,0,0,0 }, borderColor, borderW);
 
     float ease = md3SmootherStep(m_labelAnim);
-
     float textY = pY + (pH - normalFontSize) * 0.5f;
 
     float restLabelY = textY;
@@ -511,70 +685,123 @@ void TextField::renderOutlined(MaterialShader& shader, MaterialTheme& theme) {
     float textX = pX + dp(16.0f) + iconOffset;
     m_cachedTextRenderX = textX;
     float maxTextWidth = pW - dp(24.0f) - iconOffset - trailingOffset;
+    if (maxTextWidth < 0.0f) maxTextWidth = 0.0f;
 
-    std::string displayText = m_displayText;
-    float textWidth = shader.getTextWidth(displayText, normalFontSize);
-    bool isTruncated = false;
+    rebuildCharOffsets(shader, normalFontSize);
+    ensureCursorVisible(maxTextWidth);
 
-    if (textWidth > maxTextWidth && maxTextWidth > 0) {
-        isTruncated = true;
-        while (textWidth > maxTextWidth && displayText.length() > 1) {
-            int lastCharLen = 1;
-            unsigned char last = displayText.back();
-            if ((last & 0x80) == 0x80) {
-                int count = 0;
-                for (int i = (int)displayText.length() - 1; i >= 0; --i) {
-                    count++;
-                    if ((displayText[i] & 0xC0) != 0x80) break;
-                }
-                lastCharLen = count;
+    // Scoped scissor guard: clip only the text rendering area, never contaminating parent scissor.
+    {
+        GLFWwindow* win = glfwGetCurrentContext();
+        int fbW = 0, fbH = 0;
+        if (win) glfwGetFramebufferSize(win, &fbW, &fbH);
+
+        int scissorX = static_cast<int>(std::round(textX));
+        int scissorY = fbH - static_cast<int>(std::round(pY + pH));
+        int scissorW = static_cast<int>(std::round(maxTextWidth));
+        int scissorH = static_cast<int>(std::round(pH));
+
+        ScissorGuard guard(scissorX, scissorY, scissorW, scissorH);
+
+        // Draw selection highlight (binary search O(log N)).
+        if (m_hasFocus && hasSelection() && !m_charByteOffsets.empty()) {
+            int s = std::min(m_selectionStart, m_selectionEnd);
+            int e = std::max(m_selectionStart, m_selectionEnd);
+
+            float offS = 0.0f, offE = 0.0f;
+            auto itS = std::lower_bound(m_charByteOffsets.begin(), m_charByteOffsets.end(), s,
+                [](const std::pair<int, float>& item, int pos) { return item.first < pos; });
+            if (itS != m_charByteOffsets.end()) offS = itS->second;
+            else offS = m_charByteOffsets.back().second;
+
+            auto itE = std::lower_bound(m_charByteOffsets.begin(), m_charByteOffsets.end(), e,
+                [](const std::pair<int, float>& item, int pos) { return item.first < pos; });
+            if (itE != m_charByteOffsets.end()) offE = itE->second;
+            else offE = m_charByteOffsets.back().second;
+
+            float selX0 = textX + offS - m_scrollOffset;
+            float selX1 = textX + offE - m_scrollOffset;
+            float selW = selX1 - selX0;
+
+            M3Color selColor = theme.primary;
+            selColor.a = 0.28f;
+            shader.drawM3UI(selX0, textY - dp(1.0f), selW, normalFontSize + dp(2.0f), dp(2.0f), dp(2.0f), dp(2.0f), dp(2.0f), selColor);
+        }
+
+        // Core optimization: render only the visible slice of text.
+        M3Color textColor = (m_state == TextFieldState::Error) ? M3Color{ 0.85f, 0.15f, 0.15f, 1.0f } : theme.onSurface;
+        if (!m_displayText.empty() && !m_charByteOffsets.empty()) {
+            float viewLeft = m_scrollOffset - dp(16.0f);
+            float viewRight = m_scrollOffset + maxTextWidth + dp(16.0f);
+
+            auto itStart = std::lower_bound(m_charByteOffsets.begin(), m_charByteOffsets.end(), viewLeft,
+                [](const std::pair<int, float>& item, float x) { return item.second < x; });
+            
+            auto itEnd = std::upper_bound(m_charByteOffsets.begin(), m_charByteOffsets.end(), viewRight,
+                [](float x, const std::pair<int, float>& item) { return x < item.second; });
+
+            if (itStart == m_charByteOffsets.end()) itStart = m_charByteOffsets.begin();
+            if (itEnd != m_charByteOffsets.end()) ++itEnd;
+
+            size_t bStart = itStart->first;
+            size_t bEnd = (itEnd != m_charByteOffsets.end()) ? itEnd->first : m_displayText.length();
+            if (bEnd > m_displayText.length()) bEnd = m_displayText.length();
+
+            if (bStart < bEnd) {
+                std::string visibleSlice = m_displayText.substr(bStart, bEnd - bStart);
+                float sliceDrawX = textX + itStart->second - m_scrollOffset;
+                shader.drawText(visibleSlice, sliceDrawX, textY, normalFontSize, textColor);
             }
-            displayText.erase(displayText.length() - lastCharLen);
-            textWidth = shader.getTextWidth(displayText + "...", normalFontSize);
         }
-        displayText += "...";
-    }
-
-    m_charByteOffsets.clear();
-    m_charByteOffsets.push_back({ 0, 0.0f });
-    for (size_t i = 0; i < displayText.length(); ) {
-        unsigned char c = displayText[i];
-        int len = 1;
-        if ((c & 0x80) == 0x80) {
-            if ((c & 0xE0) == 0xC0) len = 2;
-            else if ((c & 0xF0) == 0xE0) len = 3;
-            else if ((c & 0xF8) == 0xF0) len = 4;
+        else if (!m_hint.empty()) {
+            float hintAlpha = m_label.empty() ? 0.6f : (0.6f * ease);
+            if (hintAlpha > 0.01f) {
+                M3Color hintColor = theme.onSurfaceVariant;
+                hintColor.a = hintAlpha;
+                shader.drawText(m_hint, textX, textY, normalFontSize, hintColor);
+            }
         }
-        i += len;
-        float w = shader.getTextWidth(displayText.substr(0, i), normalFontSize);
-        m_charByteOffsets.push_back({ (int)i, w });
-    }
 
-    if (m_hasFocus && hasSelection()) {
-        int s = std::min(m_selectionStart, m_selectionEnd);
-        int e = std::max(m_selectionStart, m_selectionEnd);
-        float selX0 = textX + shader.getTextWidth(displayText.substr(0, std::min(s, (int)displayText.length())), normalFontSize);
-        float selX1 = textX + shader.getTextWidth(displayText.substr(0, std::min(e, (int)displayText.length())), normalFontSize);
-        float selW = selX1 - selX0;
+        // Draw smooth cursor.
+        if (m_hasFocus && !m_readOnly) {
+            float cursorWidth = dp(2.0f);
+            float cursorOffsetFromStart = 0.0f;
+            auto it = std::lower_bound(m_charByteOffsets.begin(), m_charByteOffsets.end(), m_cursorPos,
+                [](const std::pair<int, float>& item, int pos) { return item.first < pos; });
+            if (it != m_charByteOffsets.end()) {
+                cursorOffsetFromStart = it->second;
+            } else if (!m_charByteOffsets.empty()) {
+                cursorOffsetFromStart = m_charByteOffsets.back().second;
+            }
 
-        M3Color selColor = theme.primary;
-        selColor.a = 0.28f;
-        shader.drawM3UI(selX0, textY - dp(1.0f), selW, normalFontSize + dp(2.0f), dp(2.0f), dp(2.0f), dp(2.0f), dp(2.0f), selColor);
-    }
+            float rawTargetX = textX + cursorOffsetFromStart - m_scrollOffset;
+            m_targetCursorX = rawTargetX;
+            if (m_smoothCursorX < 0.0f) m_smoothCursorX = m_targetCursorX;
 
-    M3Color textColor = (m_state == TextFieldState::Error) ? M3Color{ 0.85f, 0.15f, 0.15f, 1.0f } : theme.onSurface;
-    if (!m_text.empty()) {
-        shader.drawText(displayText, textX, textY, normalFontSize, textColor);
-    }
-    else if (!m_hint.empty()) {
-        float hintAlpha = m_label.empty() ? 0.6f : (0.6f * ease);
-        if (hintAlpha > 0.01f) {
-            M3Color hintColor = theme.onSurfaceVariant;
-            hintColor.a = hintAlpha;
-            shader.drawText(m_hint, textX, textY, normalFontSize, hintColor);
+            bool isMoving = std::abs(m_smoothCursorX - m_targetCursorX) > 0.5f;
+
+            if (!hasSelection() || m_isMouseSelecting) {
+                float pulse = 1.0f;
+                if (!isMoving && !m_isMouseSelecting) {
+                    float t = (m_cursorBlink / 1.25f) * 6.2831853f;
+                    float rawCos = (std::cos(t) + 1.0f) * 0.5f;
+                    pulse = rawCos * rawCos * (3.0f - 2.0f * rawCos);
+                }
+
+                float curAlpha = 0.05f + 0.95f * pulse;
+                float curScaleY = 0.35f + 0.65f * pulse;
+                float curH = normalFontSize * curScaleY;
+                float curY = textY + (normalFontSize - curH) * 0.5f;
+                float cr = cursorWidth * 0.5f;
+
+                M3Color cursorCol = theme.primary; 
+                cursorCol.a = curAlpha;
+                shader.drawM3UI(m_smoothCursorX, curY, cursorWidth, curH, cr, cr, cr, cr, cursorCol);
+            }
         }
-    }
+    } // Scissor scope ends, parent state automatically restored!
 
+    // Draw leading and trailing icons.
     float trailingCenterY = pY + pH * 0.5f;
     float trailingCenterX = pX + pW - dp(12.0f) - iconSizePx * 0.5f;
     Icon activeTrailingIcon = m_showClearIcon ? m_clearIcon : m_trailingIcon;
@@ -597,44 +824,6 @@ void TextField::renderOutlined(MaterialShader& shader, MaterialTheme& theme) {
             trailingColor = theme.onSurface;
         }
         shader.drawIcon(trailingCenterX - iconSizePx * 0.5f, trailingCenterY - iconSizePx * 0.5f, iconSizePx, activeTrailingIcon, trailingColor);
-    }
-
-    if (m_hasFocus && !m_readOnly) {
-        float cursorWidth = dp(2.0f);
-        float rawTargetX = textX;
-
-        if (isTruncated && m_cursorPos >= (int)m_text.length()) rawTargetX += textWidth;
-        else {
-            std::string before = displayText.substr(0, std::min(m_cursorPos, (int)displayText.length()));
-            rawTargetX += shader.getTextWidth(before, normalFontSize);
-        }
-
-        float maxCursorX = textX + maxTextWidth;
-        if (rawTargetX > maxCursorX) rawTargetX = maxCursorX;
-
-        m_targetCursorX = rawTargetX;
-        if (m_smoothCursorX < 0.0f) m_smoothCursorX = m_targetCursorX;
-
-        bool isMoving = std::abs(m_smoothCursorX - m_targetCursorX) > 0.5f;
-
-        if (!hasSelection() || m_isMouseSelecting) {
-            float pulse = 1.0f;
-            if (!isMoving && !m_isMouseSelecting) {
-                float t = (m_cursorBlink / 1.25f) * 6.2831853f;
-                float rawCos = (std::cos(t) + 1.0f) * 0.5f;
-                pulse = rawCos * rawCos * (3.0f - 2.0f * rawCos);
-            }
-
-            float curAlpha = 0.05f + 0.95f * pulse;
-            float curScaleY = 0.35f + 0.65f * pulse;
-            float curH = normalFontSize * curScaleY;
-            float curY = textY + (normalFontSize - curH) * 0.5f;
-            float cr = cursorWidth * 0.5f;
-
-            M3Color cursorCol = theme.primary; 
-            cursorCol.a = curAlpha;
-            shader.drawM3UI(m_smoothCursorX, curY, cursorWidth, curH, cr, cr, cr, cr, cursorCol);
-        }
     }
 }
 
@@ -677,7 +866,6 @@ void TextField::renderFilled(MaterialShader& shader, MaterialTheme& theme) {
     }
 
     float ease = md3SmootherStep(m_labelAnim);
-
     float textY = m_label.empty() ? (pY + (pH - normalFontSize) * 0.5f) : (pY + dp(26.0f));
 
     float restLabelY = pY + (pH - normalFontSize) * 0.5f;
@@ -715,67 +903,115 @@ void TextField::renderFilled(MaterialShader& shader, MaterialTheme& theme) {
     float textX = pX + dp(16.0f) + iconOffset;
     m_cachedTextRenderX = textX;
     float maxTextWidth = pW - dp(24.0f) - iconOffset - trailingOffset;
+    if (maxTextWidth < 0.0f) maxTextWidth = 0.0f;
 
-    std::string displayText = m_displayText;
-    float textWidth = shader.getTextWidth(displayText, normalFontSize);
-    bool isTruncated = false;
+    rebuildCharOffsets(shader, normalFontSize);
+    ensureCursorVisible(maxTextWidth);
 
-    if (textWidth > maxTextWidth && maxTextWidth > 0) {
-        isTruncated = true;
-        while (textWidth > maxTextWidth && displayText.length() > 1) {
-            int len = 1; 
-            unsigned char last = displayText.back();
-            if ((last & 0x80) == 0x80) {
-                int count = 0; 
-                for (int i = (int)displayText.length() - 1; i >= 0; --i) { 
-                    count++; 
-                    if ((displayText[i] & 0xC0) != 0x80) break; 
-                } 
-                len = count;
+    {
+        GLFWwindow* win = glfwGetCurrentContext();
+        int fbW = 0, fbH = 0;
+        if (win) glfwGetFramebufferSize(win, &fbW, &fbH);
+
+        int scissorX = static_cast<int>(std::round(textX));
+        int scissorY = fbH - static_cast<int>(std::round(pY + pH));
+        int scissorW = static_cast<int>(std::round(maxTextWidth));
+        int scissorH = static_cast<int>(std::round(pH));
+
+        ScissorGuard guard(scissorX, scissorY, scissorW, scissorH);
+
+        if (m_hasFocus && hasSelection() && !m_charByteOffsets.empty()) {
+            int s = std::min(m_selectionStart, m_selectionEnd);
+            int e = std::max(m_selectionStart, m_selectionEnd);
+
+            float offS = 0.0f, offE = 0.0f;
+            auto itS = std::lower_bound(m_charByteOffsets.begin(), m_charByteOffsets.end(), s,
+                [](const std::pair<int, float>& item, int pos) { return item.first < pos; });
+            if (itS != m_charByteOffsets.end()) offS = itS->second;
+            else offS = m_charByteOffsets.back().second;
+
+            auto itE = std::lower_bound(m_charByteOffsets.begin(), m_charByteOffsets.end(), e,
+                [](const std::pair<int, float>& item, int pos) { return item.first < pos; });
+            if (itE != m_charByteOffsets.end()) offE = itE->second;
+            else offE = m_charByteOffsets.back().second;
+
+            float selX0 = textX + offS - m_scrollOffset;
+            float selX1 = textX + offE - m_scrollOffset;
+            float selW = selX1 - selX0;
+
+            M3Color selColor = theme.primary;
+            selColor.a = 0.28f;
+            shader.drawM3UI(selX0, textY - dp(1.0f), selW, normalFontSize + dp(2.0f), dp(2.0f), dp(2.0f), dp(2.0f), dp(2.0f), selColor);
+        }
+
+        M3Color textColor = (m_state == TextFieldState::Error) ? M3Color{ 0.85f, 0.15f, 0.15f, 1.0f } : theme.onSurface;
+        if (!m_displayText.empty() && !m_charByteOffsets.empty()) {
+            float viewLeft = m_scrollOffset - dp(16.0f);
+            float viewRight = m_scrollOffset + maxTextWidth + dp(16.0f);
+
+            auto itStart = std::lower_bound(m_charByteOffsets.begin(), m_charByteOffsets.end(), viewLeft,
+                [](const std::pair<int, float>& item, float x) { return item.second < x; });
+            
+            auto itEnd = std::upper_bound(m_charByteOffsets.begin(), m_charByteOffsets.end(), viewRight,
+                [](float x, const std::pair<int, float>& item) { return x < item.second; });
+
+            if (itStart == m_charByteOffsets.end()) itStart = m_charByteOffsets.begin();
+            if (itEnd != m_charByteOffsets.end()) ++itEnd;
+
+            size_t bStart = itStart->first;
+            size_t bEnd = (itEnd != m_charByteOffsets.end()) ? itEnd->first : m_displayText.length();
+            if (bEnd > m_displayText.length()) bEnd = m_displayText.length();
+
+            if (bStart < bEnd) {
+                std::string visibleSlice = m_displayText.substr(bStart, bEnd - bStart);
+                float sliceDrawX = textX + itStart->second - m_scrollOffset;
+                shader.drawText(visibleSlice, sliceDrawX, textY, normalFontSize, textColor);
             }
-            displayText.erase(displayText.length() - len);
-            textWidth = shader.getTextWidth(displayText + "...", normalFontSize);
         }
-        displayText += "...";
-    }
-
-    m_charByteOffsets.clear();
-    m_charByteOffsets.push_back({ 0, 0.0f });
-    for (size_t i = 0; i < displayText.length(); ) {
-        unsigned char c = displayText[i];
-        int len = 1;
-        if ((c & 0x80) == 0x80) {
-            if ((c & 0xE0) == 0xC0) len = 2;
-            else if ((c & 0xF0) == 0xE0) len = 3;
-            else if ((c & 0xF8) == 0xF0) len = 4;
+        else if (!m_hint.empty()) {
+            float hintAlpha = m_label.empty() ? 0.6f : (0.6f * ease);
+            if (hintAlpha > 0.01f) {
+                M3Color hintColor = theme.onSurfaceVariant;
+                hintColor.a = hintAlpha;
+                shader.drawText(m_hint, textX, textY, normalFontSize, hintColor);
+            }
         }
-        i += len;
-        float w = shader.getTextWidth(displayText.substr(0, i), normalFontSize);
-        m_charByteOffsets.push_back({ (int)i, w });
-    }
 
-    if (m_hasFocus && hasSelection()) {
-        int s = std::min(m_selectionStart, m_selectionEnd);
-        int e = std::max(m_selectionStart, m_selectionEnd);
-        float selX0 = textX + shader.getTextWidth(displayText.substr(0, std::min(s, (int)displayText.length())), normalFontSize);
-        float selX1 = textX + shader.getTextWidth(displayText.substr(0, std::min(e, (int)displayText.length())), normalFontSize);
-        float selW = selX1 - selX0;
+        if (m_hasFocus && !m_readOnly) {
+            float cursorWidth = dp(2.0f);
+            float cursorOffsetFromStart = 0.0f;
+            auto it = std::lower_bound(m_charByteOffsets.begin(), m_charByteOffsets.end(), m_cursorPos,
+                [](const std::pair<int, float>& item, int pos) { return item.first < pos; });
+            if (it != m_charByteOffsets.end()) {
+                cursorOffsetFromStart = it->second;
+            } else if (!m_charByteOffsets.empty()) {
+                cursorOffsetFromStart = m_charByteOffsets.back().second;
+            }
 
-        M3Color selColor = theme.primary;
-        selColor.a = 0.28f;
-        shader.drawM3UI(selX0, textY - dp(1.0f), selW, normalFontSize + dp(2.0f), dp(2.0f), dp(2.0f), dp(2.0f), dp(2.0f), selColor);
-    }
+            float rawTargetX = textX + cursorOffsetFromStart - m_scrollOffset;
+            m_targetCursorX = rawTargetX;
+            if (m_smoothCursorX < 0.0f) m_smoothCursorX = m_targetCursorX;
 
-    M3Color textColor = (m_state == TextFieldState::Error) ? M3Color{ 0.85f, 0.15f, 0.15f, 1.0f } : theme.onSurface;
-    if (!m_text.empty()) {
-        shader.drawText(displayText, textX, textY, normalFontSize, textColor);
-    }
-    else if (!m_hint.empty()) {
-        float hintAlpha = m_label.empty() ? 0.6f : (0.6f * ease);
-        if (hintAlpha > 0.01f) {
-            M3Color hintColor = theme.onSurfaceVariant;
-            hintColor.a = hintAlpha;
-            shader.drawText(m_hint, textX, textY, normalFontSize, hintColor);
+            bool isMoving = std::abs(m_smoothCursorX - m_targetCursorX) > 0.5f;
+
+            if (!hasSelection() || m_isMouseSelecting) {
+                float pulse = 1.0f;
+                if (!isMoving && !m_isMouseSelecting) {
+                    float t = (m_cursorBlink / 1.25f) * 6.2831853f;
+                    float rawCos = (std::cos(t) + 1.0f) * 0.5f;
+                    pulse = rawCos * rawCos * (3.0f - 2.0f * rawCos);
+                }
+
+                float curAlpha = 0.05f + 0.95f * pulse;
+                float curScaleY = 0.35f + 0.65f * pulse;
+                float curH = normalFontSize * curScaleY;
+                float curY = textY + (normalFontSize - curH) * 0.5f;
+                float cr = cursorWidth * 0.5f;
+
+                M3Color cursorCol = theme.primary; 
+                cursorCol.a = curAlpha;
+                shader.drawM3UI(m_smoothCursorX, curY, cursorWidth, curH, cr, cr, cr, cr, cursorCol);
+            }
         }
     }
 
@@ -801,42 +1037,6 @@ void TextField::renderFilled(MaterialShader& shader, MaterialTheme& theme) {
             trailingColor = theme.onSurface;
         }
         shader.drawIcon(trailingCenterX - iconSizePx * 0.5f, trailingCenterY - iconSizePx * 0.5f, iconSizePx, activeTrailingIcon, trailingColor);
-    }
-
-    if (m_hasFocus && !m_readOnly) {
-        float cursorWidth = dp(2.0f); 
-        float rawTargetX = textX;
-        if (isTruncated && m_cursorPos >= (int)m_text.length()) rawTargetX += textWidth;
-        else {
-            std::string before = displayText.substr(0, std::min(m_cursorPos, (int)displayText.length())); 
-            rawTargetX += shader.getTextWidth(before, normalFontSize); 
-        }
-        float maxCursorX = textX + maxTextWidth; 
-        if (rawTargetX > maxCursorX) rawTargetX = maxCursorX;
-        
-        m_targetCursorX = rawTargetX;
-        if (m_smoothCursorX < 0.0f) m_smoothCursorX = m_targetCursorX;
-
-        bool isMoving = std::abs(m_smoothCursorX - m_targetCursorX) > 0.5f;
-
-        if (!hasSelection() || m_isMouseSelecting) {
-            float pulse = 1.0f;
-            if (!isMoving && !m_isMouseSelecting) {
-                float t = (m_cursorBlink / 1.25f) * 6.2831853f;
-                float rawCos = (std::cos(t) + 1.0f) * 0.5f;
-                pulse = rawCos * rawCos * (3.0f - 2.0f * rawCos);
-            }
-
-            float curAlpha = 0.05f + 0.95f * pulse;
-            float curScaleY = 0.35f + 0.65f * pulse;
-            float curH = normalFontSize * curScaleY;
-            float curY = textY + (normalFontSize - curH) * 0.5f;
-            float cr = cursorWidth * 0.5f;
-
-            M3Color cursorCol = theme.primary; 
-            cursorCol.a = curAlpha;
-            shader.drawM3UI(m_smoothCursorX, curY, cursorWidth, curH, cr, cr, cr, cr, cursorCol);
-        }
     }
 }
 
@@ -877,7 +1077,6 @@ void TextField::renderUnderlined(MaterialShader& shader, MaterialTheme& theme) {
     }
 
     float ease = md3SmootherStep(m_labelAnim);
-
     float textY = m_label.empty() ? (pY + (pH - normalFontSize) * 0.5f) : (pY + dp(24.0f));
 
     float restLabelY = pY + (pH - normalFontSize) * 0.5f;
@@ -915,67 +1114,115 @@ void TextField::renderUnderlined(MaterialShader& shader, MaterialTheme& theme) {
     float textX = pX + dp(16.0f) + iconOffset;
     m_cachedTextRenderX = textX;
     float maxTextWidth = pW - dp(24.0f) - iconOffset - trailingOffset;
+    if (maxTextWidth < 0.0f) maxTextWidth = 0.0f;
 
-    std::string displayText = m_displayText;
-    float textWidth = shader.getTextWidth(displayText, normalFontSize);
-    bool isTruncated = false;
+    rebuildCharOffsets(shader, normalFontSize);
+    ensureCursorVisible(maxTextWidth);
 
-    if (textWidth > maxTextWidth && maxTextWidth > 0) {
-        isTruncated = true;
-        while (textWidth > maxTextWidth && displayText.length() > 1) {
-            int len = 1; 
-            unsigned char last = displayText.back();
-            if ((last & 0x80) == 0x80) {
-                int count = 0; 
-                for (int i = (int)displayText.length() - 1; i >= 0; --i) { 
-                    count++; 
-                    if ((displayText[i] & 0xC0) != 0x80) break; 
-                } 
-                len = count;
+    {
+        GLFWwindow* win = glfwGetCurrentContext();
+        int fbW = 0, fbH = 0;
+        if (win) glfwGetFramebufferSize(win, &fbW, &fbH);
+
+        int scissorX = static_cast<int>(std::round(textX));
+        int scissorY = fbH - static_cast<int>(std::round(pY + pH));
+        int scissorW = static_cast<int>(std::round(maxTextWidth));
+        int scissorH = static_cast<int>(std::round(pH));
+
+        ScissorGuard guard(scissorX, scissorY, scissorW, scissorH);
+
+        if (m_hasFocus && hasSelection() && !m_charByteOffsets.empty()) {
+            int s = std::min(m_selectionStart, m_selectionEnd);
+            int e = std::max(m_selectionStart, m_selectionEnd);
+
+            float offS = 0.0f, offE = 0.0f;
+            auto itS = std::lower_bound(m_charByteOffsets.begin(), m_charByteOffsets.end(), s,
+                [](const std::pair<int, float>& item, int pos) { return item.first < pos; });
+            if (itS != m_charByteOffsets.end()) offS = itS->second;
+            else offS = m_charByteOffsets.back().second;
+
+            auto itE = std::lower_bound(m_charByteOffsets.begin(), m_charByteOffsets.end(), e,
+                [](const std::pair<int, float>& item, int pos) { return item.first < pos; });
+            if (itE != m_charByteOffsets.end()) offE = itE->second;
+            else offE = m_charByteOffsets.back().second;
+
+            float selX0 = textX + offS - m_scrollOffset;
+            float selX1 = textX + offE - m_scrollOffset;
+            float selW = selX1 - selX0;
+
+            M3Color selColor = theme.primary;
+            selColor.a = 0.28f;
+            shader.drawM3UI(selX0, textY - dp(1.0f), selW, normalFontSize + dp(2.0f), dp(2.0f), dp(2.0f), dp(2.0f), dp(2.0f), selColor);
+        }
+
+        M3Color textColor = (m_state == TextFieldState::Error) ? M3Color{ 0.85f, 0.15f, 0.15f, 1.0f } : theme.onSurface;
+        if (!m_displayText.empty() && !m_charByteOffsets.empty()) {
+            float viewLeft = m_scrollOffset - dp(16.0f);
+            float viewRight = m_scrollOffset + maxTextWidth + dp(16.0f);
+
+            auto itStart = std::lower_bound(m_charByteOffsets.begin(), m_charByteOffsets.end(), viewLeft,
+                [](const std::pair<int, float>& item, float x) { return item.second < x; });
+            
+            auto itEnd = std::upper_bound(m_charByteOffsets.begin(), m_charByteOffsets.end(), viewRight,
+                [](float x, const std::pair<int, float>& item) { return x < item.second; });
+
+            if (itStart == m_charByteOffsets.end()) itStart = m_charByteOffsets.begin();
+            if (itEnd != m_charByteOffsets.end()) ++itEnd;
+
+            size_t bStart = itStart->first;
+            size_t bEnd = (itEnd != m_charByteOffsets.end()) ? itEnd->first : m_displayText.length();
+            if (bEnd > m_displayText.length()) bEnd = m_displayText.length();
+
+            if (bStart < bEnd) {
+                std::string visibleSlice = m_displayText.substr(bStart, bEnd - bStart);
+                float sliceDrawX = textX + itStart->second - m_scrollOffset;
+                shader.drawText(visibleSlice, sliceDrawX, textY, normalFontSize, textColor);
             }
-            displayText.erase(displayText.length() - len);
-            textWidth = shader.getTextWidth(displayText + "...", normalFontSize);
         }
-        displayText += "...";
-    }
-
-    m_charByteOffsets.clear();
-    m_charByteOffsets.push_back({ 0, 0.0f });
-    for (size_t i = 0; i < displayText.length(); ) {
-        unsigned char c = displayText[i];
-        int len = 1;
-        if ((c & 0x80) == 0x80) {
-            if ((c & 0xE0) == 0xC0) len = 2;
-            else if ((c & 0xF0) == 0xE0) len = 3;
-            else if ((c & 0xF8) == 0xF0) len = 4;
+        else if (!m_hint.empty()) {
+            float hintAlpha = m_label.empty() ? 0.6f : (0.6f * ease);
+            if (hintAlpha > 0.01f) {
+                M3Color hintColor = theme.onSurfaceVariant;
+                hintColor.a = hintAlpha;
+                shader.drawText(m_hint, textX, textY, normalFontSize, hintColor);
+            }
         }
-        i += len;
-        float w = shader.getTextWidth(displayText.substr(0, i), normalFontSize);
-        m_charByteOffsets.push_back({ (int)i, w });
-    }
 
-    if (m_hasFocus && hasSelection()) {
-        int s = std::min(m_selectionStart, m_selectionEnd);
-        int e = std::max(m_selectionStart, m_selectionEnd);
-        float selX0 = textX + shader.getTextWidth(displayText.substr(0, std::min(s, (int)displayText.length())), normalFontSize);
-        float selX1 = textX + shader.getTextWidth(displayText.substr(0, std::min(e, (int)displayText.length())), normalFontSize);
-        float selW = selX1 - selX0;
+        if (m_hasFocus && !m_readOnly) {
+            float cursorWidth = dp(2.0f);
+            float cursorOffsetFromStart = 0.0f;
+            auto it = std::lower_bound(m_charByteOffsets.begin(), m_charByteOffsets.end(), m_cursorPos,
+                [](const std::pair<int, float>& item, int pos) { return item.first < pos; });
+            if (it != m_charByteOffsets.end()) {
+                cursorOffsetFromStart = it->second;
+            } else if (!m_charByteOffsets.empty()) {
+                cursorOffsetFromStart = m_charByteOffsets.back().second;
+            }
 
-        M3Color selColor = theme.primary;
-        selColor.a = 0.28f;
-        shader.drawM3UI(selX0, textY - dp(1.0f), selW, normalFontSize + dp(2.0f), dp(2.0f), dp(2.0f), dp(2.0f), dp(2.0f), selColor);
-    }
+            float rawTargetX = textX + cursorOffsetFromStart - m_scrollOffset;
+            m_targetCursorX = rawTargetX;
+            if (m_smoothCursorX < 0.0f) m_smoothCursorX = m_targetCursorX;
 
-    M3Color textColor = (m_state == TextFieldState::Error) ? M3Color{ 0.85f, 0.15f, 0.15f, 1.0f } : theme.onSurface;
-    if (!m_text.empty()) {
-        shader.drawText(displayText, textX, textY, normalFontSize, textColor);
-    }
-    else if (!m_hint.empty()) {
-        float hintAlpha = m_label.empty() ? 0.6f : (0.6f * ease);
-        if (hintAlpha > 0.01f) {
-            M3Color hintColor = theme.onSurfaceVariant;
-            hintColor.a = hintAlpha;
-            shader.drawText(m_hint, textX, textY, normalFontSize, hintColor);
+            bool isMoving = std::abs(m_smoothCursorX - m_targetCursorX) > 0.5f;
+
+            if (!hasSelection() || m_isMouseSelecting) {
+                float pulse = 1.0f;
+                if (!isMoving && !m_isMouseSelecting) {
+                    float t = (m_cursorBlink / 1.25f) * 6.2831853f;
+                    float rawCos = (std::cos(t) + 1.0f) * 0.5f;
+                    pulse = rawCos * rawCos * (3.0f - 2.0f * rawCos);
+                }
+
+                float curAlpha = 0.05f + 0.95f * pulse;
+                float curScaleY = 0.35f + 0.65f * pulse;
+                float curH = normalFontSize * curScaleY;
+                float curY = textY + (normalFontSize - curH) * 0.5f;
+                float cr = cursorWidth * 0.5f;
+
+                M3Color cursorCol = theme.primary; 
+                cursorCol.a = curAlpha;
+                shader.drawM3UI(m_smoothCursorX, curY, cursorWidth, curH, cr, cr, cr, cr, cursorCol);
+            }
         }
     }
 
@@ -1001,42 +1248,6 @@ void TextField::renderUnderlined(MaterialShader& shader, MaterialTheme& theme) {
             trailingColor = theme.onSurface;
         }
         shader.drawIcon(trailingCenterX - iconSizePx * 0.5f, trailingCenterY - iconSizePx * 0.5f, iconSizePx, activeTrailingIcon, trailingColor);
-    }
-
-    if (m_hasFocus && !m_readOnly) {
-        float cursorWidth = dp(2.0f); 
-        float rawTargetX = textX;
-        if (isTruncated && m_cursorPos >= (int)m_text.length()) rawTargetX += textWidth;
-        else {
-            std::string before = displayText.substr(0, std::min(m_cursorPos, (int)displayText.length())); 
-            rawTargetX += shader.getTextWidth(before, normalFontSize); 
-        }
-        float maxCursorX = textX + maxTextWidth; 
-        if (rawTargetX > maxCursorX) rawTargetX = maxCursorX;
-        
-        m_targetCursorX = rawTargetX;
-        if (m_smoothCursorX < 0.0f) m_smoothCursorX = m_targetCursorX;
-
-        bool isMoving = std::abs(m_smoothCursorX - m_targetCursorX) > 0.5f;
-
-        if (!hasSelection() || m_isMouseSelecting) {
-            float pulse = 1.0f;
-            if (!isMoving && !m_isMouseSelecting) {
-                float t = (m_cursorBlink / 1.25f) * 6.2831853f;
-                float rawCos = (std::cos(t) + 1.0f) * 0.5f;
-                pulse = rawCos * rawCos * (3.0f - 2.0f * rawCos);
-            }
-
-            float curAlpha = 0.05f + 0.95f * pulse;
-            float curScaleY = 0.35f + 0.65f * pulse;
-            float curH = normalFontSize * curScaleY;
-            float curY = textY + (normalFontSize - curH) * 0.5f;
-            float cr = cursorWidth * 0.5f;
-
-            M3Color cursorCol = theme.primary; 
-            cursorCol.a = curAlpha;
-            shader.drawM3UI(m_smoothCursorX, curY, cursorWidth, curH, cr, cr, cr, cr, cursorCol);
-        }
     }
 }
 
@@ -1218,7 +1429,7 @@ bool TextField::handleKey(int key, int action) {
         }
         if (m_cursorPos < (int)m_text.length()) {
             int charLen = 1;
-            unsigned char c = m_text[m_cursorPos];
+            unsigned char c = static_cast<unsigned char>(m_text[m_cursorPos]);
             if ((c & 0x80) == 0x80) {
                 int count = 0;
                 for (int i = m_cursorPos; i < (int)m_text.length(); ++i) {
@@ -1228,6 +1439,7 @@ bool TextField::handleKey(int key, int action) {
                 charLen = count;
             }
             m_text.erase(m_cursorPos, charLen);
+            m_offsetsDirty = true;
             updateDisplayText();
             if (m_onTextChanged) m_onTextChanged(m_text);
         }
@@ -1377,12 +1589,15 @@ bool TextField::handleChar(unsigned int codepoint) {
 
     m_text.insert(m_cursorPos, utf8);
     m_cursorPos += (int)utf8.length();
+    m_offsetsDirty = true;
     updateDisplayText();
     
     m_cursorBlink = 0.0f;
     if (m_onTextChanged) m_onTextChanged(m_text);
     return true;
 }
+
+// --- Builder Implementation ---
 
 TextFieldBuilder::TextFieldBuilder() = default;
 
