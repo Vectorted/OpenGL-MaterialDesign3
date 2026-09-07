@@ -11,18 +11,18 @@
  */
 
 #include "TextView.hpp"
+#include <GLFW/glfw3.h>
 #include <sstream>
 #include <iomanip>
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <cmath>
 
 /**
- * @brief Helper utility to sanitize color identification strings.
- * Discards whitespace and standardizes lower-case formatting for robust string token matching.
- * 
- * @param str Raw color string descriptor.
- * @return std::string Cleaned token string.
+ * @brief Removes whitespace and converts a string to lowercase for case‑insensitive parsing.
+ * @param str Input string.
+ * @return Cleaned string with no spaces and all lowercase.
  */
 static std::string cleanString(const std::string& str) {
     std::string cleaned;
@@ -35,12 +35,9 @@ static std::string cleanString(const std::string& str) {
 }
 
 /**
- * @brief Computes proportional glyph advance weight for standard ASCII characters.
- * 
- * Used during layout phase estimation to closely approximate vector font bounding widths.
- * 
- * @param c Target character code.
- * @return float Relative glyph width factor scaled against font size.
+ * @brief Returns a proportional width factor for a single ASCII character relative to font size.
+ * @param c The character.
+ * @return A unitless factor; typical range 0.2–0.9.
  */
 static float getCharRelativeWidth(char c) {
     if (c == ' ' || c == '\t') return 0.28f;
@@ -54,20 +51,18 @@ static float getCharRelativeWidth(char c) {
 }
 
 /**
- * @brief Measures approximate horizontal pixel length for a single text line in dp.
- * 
- * Handles variable UTF-8 multi-byte sequence advance assumptions.
- * 
- * @param line Single-line text slice.
- * @param fontSizeDp Font size in density-independent pixels.
- * @return float Computed horizontal line span in dp.
+ * @brief Measures the width of a slice of UTF-8 text using a proportional font model.
+ * @param data Pointer to the raw UTF-8 string data.
+ * @param len Byte length of the slice.
+ * @param fontSizeDp The font size in dp.
+ * @return Estimated width in dp.
  */
-static float measureLineWidthDp(const std::string& line, float fontSizeDp) {
+static float measureLineSliceDp(const char* data, size_t len, float fontSizeDp) {
     float totalUnits = 0.0f;
-    for (size_t i = 0; i < line.length(); ) {
-        unsigned char c = line[i];
+    for (size_t i = 0; i < len; ) {
+        unsigned char c = static_cast<unsigned char>(data[i]);
         if (c < 128) {
-            totalUnits += getCharRelativeWidth((char)c);
+            totalUnits += getCharRelativeWidth(static_cast<char>(c));
             i++;
         } else {
             int bytes = 1;
@@ -81,13 +76,28 @@ static float measureLineWidthDp(const std::string& line, float fontSizeDp) {
     return totalUnits * fontSizeDp;
 }
 
+// --- Constructor ---
+
 TextView::TextView() {
     layout_width = WRAP_CONTENT;
     layout_height = WRAP_CONTENT;
 }
 
-void TextView::setText(const std::string& text) { m_text = text; }
-void TextView::setTextSize(float sizeDp) { m_textSize = sizeDp; }
+// --- Public API implementations ---
+
+void TextView::setText(const std::string& text) { 
+    if (m_text != text) {
+        m_text = text; 
+        m_isDirty = true;
+    }
+}
+
+void TextView::setTextSize(float sizeDp) { 
+    if (m_textSize != sizeDp) {
+        m_textSize = sizeDp; 
+        m_isDirty = true;
+    }
+}
 
 void TextView::setTextColor(const M3Color& color) { 
     m_color = color; 
@@ -159,53 +169,72 @@ void TextView::setTextColor(const std::string& colorStr) {
         }
     }
     
+    // If not parsed as a literal color, treat as a theme token.
     m_useThemeColor = true;
     m_themeColorToken = colorStr;
 }
 
-float TextView::getPreferredWidth() {
-    float maxLineW = 0.0f;
-    size_t start = 0;
-    size_t end = m_text.find('\n');
+void TextView::updateTextLayoutMetrics() {
+    if (!m_isDirty) return;
+    m_isDirty = false;
+    m_lineRanges.clear();
 
-    while (end != std::string::npos) {
-        std::string line = m_text.substr(start, end - start);
-        float lw = measureLineWidthDp(line, m_textSize);
-        if (lw > maxLineW) maxLineW = lw;
-        start = end + 1;
-        end = m_text.find('\n', start);
+    if (m_text.empty()) {
+        m_cachedPreferredWidth = 0.0f;
+        m_cachedPreferredHeight = m_textSize;
+        return;
     }
-    float lw = measureLineWidthDp(m_text.substr(start), m_textSize);
-    if (lw > maxLineW) maxLineW = lw;
 
-    float finalWidthDp = maxLineW;
+    // Single-pass scan to build line range indices, avoiding repeated memory allocations.
+    size_t len = m_text.length();
+    size_t start = 0;
+    float maxLineW = 0.0f;
+
+    for (size_t i = 0; i <= len; ++i) {
+        if (i == len || m_text[i] == '\n') {
+            size_t lineLen = i - start;
+            // Strip trailing carriage return if present.
+            if (lineLen > 0 && m_text[start + lineLen - 1] == '\r') {
+                lineLen--;
+            }
+            m_lineRanges.push_back({ start, lineLen });
+
+            float lw = measureLineSliceDp(m_text.data() + start, lineLen, m_textSize);
+            if (lw > maxLineW) maxLineW = lw;
+
+            start = i + 1;
+        }
+    }
+
     if (m_hasIcon && !isIconEmpty(m_icon)) {
         float iconSizeDp = m_iconSizeDp > 0.0f ? m_iconSizeDp : m_textSize * 1.2f;
-        finalWidthDp += iconSizeDp + 8.0f;
+        maxLineW += iconSizeDp + 8.0f;
     }
-    
-    return finalWidthDp + padding_left + padding_right;
+
+    m_cachedPreferredWidth = maxLineW;
+
+    size_t lineCount = m_lineRanges.empty() ? 1 : m_lineRanges.size();
+    float stepY = m_textSize * m_lineSpacingMult + m_lineSpacingExtra;
+    float textHeightDp = (lineCount - 1) * stepY + m_textSize;
+    if (textHeightDp < m_textSize) textHeightDp = m_textSize;
+
+    m_cachedPreferredHeight = textHeightDp;
+}
+
+float TextView::getPreferredWidth() {
+    updateTextLayoutMetrics();
+    return m_cachedPreferredWidth + padding_left + padding_right;
 }
 
 float TextView::getPreferredHeight() {
-    int lineCount = 1;
-    for (char c : m_text) { 
-        if (c == '\n') lineCount++; 
-    }
-
-    float stepY = m_textSize * m_lineSpacingMult + m_lineSpacingExtra;
-    float textHeightDp = (lineCount - 1) * stepY + m_textSize;
-
-    if (textHeightDp < m_textSize) {
-        textHeightDp = m_textSize;
-    }
-
-    return textHeightDp + padding_top + padding_bottom;
+    updateTextLayoutMetrics();
+    return m_cachedPreferredHeight + padding_top + padding_bottom;
 }
 
 void TextView::render(MaterialShader& renderer, MaterialTheme& theme) {
+    updateTextLayoutMetrics();
+
     M3Color finalColor = theme.onSurface;
-    
     if (!m_useThemeColor) { 
         finalColor = m_color; 
     }
@@ -221,21 +250,22 @@ void TextView::render(MaterialShader& renderer, MaterialTheme& theme) {
 
     float pSize = dp(m_textSize);
     float stepY = pSize * m_lineSpacingMult + dp(m_lineSpacingExtra);
+    if (stepY <= 0.0f) stepY = pSize;
 
-    int lineCount = 1;
-    for (char c : m_text) {
-        if (c == '\n') lineCount++;
-    }
-    
-    float totalTextHeight = (lineCount - 1) * stepY + pSize;
-    if (totalTextHeight < pSize) {
-        totalTextHeight = pSize;
+    size_t lineCount = m_lineRanges.size();
+    float totalTextHeight = (lineCount > 1) ? ((lineCount - 1) * stepY + pSize) : pSize;
+
+    float availContentH = height - dp(padding_top + padding_bottom);
+    // Align to top if text exceeds available height; otherwise center vertically.
+    float textY = y + dp(padding_top);
+    if (availContentH > totalTextHeight) {
+        textY += (availContentH - totalTextHeight) * 0.5f;
     }
 
-    float textY = y + dp(padding_top) + (height - dp(padding_top + padding_bottom) - totalTextHeight) / 2.0f;
     float contentLeft = x + dp(padding_left);
     float availW = width - dp(padding_left + padding_right);
 
+    // Draw leading icon.
     float iconOffset = 0.0f;
     if (m_hasIcon && !isIconEmpty(m_icon)) {
         float iconSize = m_iconSizeDp > 0.0f ? dp(m_iconSizeDp) : pSize * 1.2f;
@@ -244,47 +274,58 @@ void TextView::render(MaterialShader& renderer, MaterialTheme& theme) {
         iconOffset = iconSize + dp(8.0f);
     }
 
-    if (!m_text.empty()) {
-        size_t start = 0;
-        size_t end = m_text.find('\n');
-        float currentY = textY;
+    if (m_lineRanges.empty()) return;
 
-        while (end != std::string::npos) {
-            std::string line = m_text.substr(start, end - start);
-            if (!line.empty() && line.back() == '\r') line.pop_back();
+    // --- Obtain screen/viewport clipping bounds ---
+    GLFWwindow* win = glfwGetCurrentContext();
+    int fbW = 0, fbH = 0;
+    if (win) {
+        glfwGetFramebufferSize(win, &fbW, &fbH);
+    } else {
+        fbH = 100000; // Safe fallback
+    }
 
-            if (!line.empty()) {
-                float realTextW = renderer.getTextWidth(line, pSize);
-                float drawX = contentLeft + iconOffset;
+    // Guard margin (prevents clipping of partially visible characters).
+    float clipTop = 0.0f - pSize * 2.0f;
+    float clipBottom = static_cast<float>(fbH) + pSize * 2.0f;
 
-                if (m_alignment == TextAlignment::Center) {
-                    drawX = contentLeft + iconOffset + (availW - iconOffset - realTextW) * 0.5f;
-                } else if (m_alignment == TextAlignment::Right) {
-                    drawX = contentLeft + availW - realTextW;
-                }
+    // --- Core optimization: O(1) compute visible line range via math ---
+    int startLineIdx = 0;
+    int endLineIdx = static_cast<int>(lineCount) - 1;
 
-                renderer.drawText(line, drawX, currentY, pSize, finalColor);
-            }
+    if (textY < clipTop) {
+        startLineIdx = static_cast<int>(std::floor((clipTop - textY) / stepY));
+        if (startLineIdx < 0) startLineIdx = 0;
+    }
 
-            currentY += stepY;
-            start = end + 1;
-            end = m_text.find('\n', start);
+    if (textY + totalTextHeight > clipBottom) {
+        endLineIdx = static_cast<int>(std::ceil((clipBottom - textY) / stepY));
+        if (endLineIdx >= static_cast<int>(lineCount)) {
+            endLineIdx = static_cast<int>(lineCount) - 1;
+        }
+    }
+
+    if (startLineIdx > endLineIdx || startLineIdx >= static_cast<int>(lineCount)) {
+        return; // Completely outside viewport, skip rendering.
+    }
+
+    // Render only the visible lines.
+    for (int i = startLineIdx; i <= endLineIdx; ++i) {
+        const auto& range = m_lineRanges[i];
+        if (range.length == 0) continue;
+
+        float currentY = textY + i * stepY;
+        std::string line = m_text.substr(range.start, range.length);
+
+        float realTextW = renderer.getTextWidth(line, pSize);
+        float drawX = contentLeft + iconOffset;
+
+        if (m_alignment == TextAlignment::Center) {
+            drawX = contentLeft + iconOffset + (availW - iconOffset - realTextW) * 0.5f;
+        } else if (m_alignment == TextAlignment::Right) {
+            drawX = contentLeft + availW - realTextW;
         }
 
-        std::string finalLine = m_text.substr(start);
-        if (!finalLine.empty() && finalLine.back() == '\r') finalLine.pop_back();
-
-        if (!finalLine.empty()) {
-            float realTextW = renderer.getTextWidth(finalLine, pSize);
-            float drawX = contentLeft + iconOffset;
-
-            if (m_alignment == TextAlignment::Center) {
-                drawX = contentLeft + iconOffset + (availW - iconOffset - realTextW) * 0.5f;
-            } else if (m_alignment == TextAlignment::Right) {
-                drawX = contentLeft + availW - realTextW;
-            }
-
-            renderer.drawText(finalLine, drawX, currentY, pSize, finalColor);
-        }
+        renderer.drawText(line, drawX, currentY, pSize, finalColor);
     }
 }
