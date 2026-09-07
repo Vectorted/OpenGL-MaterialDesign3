@@ -43,127 +43,224 @@ enum class TextFieldState {
 /**
  * @class TextField
  * @brief Comprehensive single-line text input control conforming to Material Design 3 guidelines.
+ * 
+ * Supports floating labels, hint text, error state, leading/trailing icons, clear button,
+ * password masking, character limits, text selection, and smooth cursor animations.
+ * All rendering is performed via OpenGL ES through the MaterialShader interface.
  */
 class TextField : public View {
 public:
-    /** @brief Constructs a default TextField instance. */
+    /** @brief Constructs a default TextField instance with default property values. */
     TextField();
 
     /** @brief Virtual destructor. */
     virtual ~TextField() override = default;
 
-    /** @brief Sets input string content. */
+    /**
+     * @brief Sets the raw text content, respecting maximum length and updating display.
+     * @param text New text string (UTF-8 encoded).
+     * @note If text exceeds maxLength, it is truncated to the allowed character count.
+     */
     void setText(const std::string& text);
 
-    /** @brief Sets companion floating label text. */
+    /**
+     * @brief Sets the floating label text.
+     * @param label Label string displayed above the input field when focused or non-empty.
+     */
     void setLabel(const std::string& label);
 
-    /** @brief Sets placeholder hint text. */
+    /**
+     * @brief Sets the placeholder hint text.
+     * @param hint Hint displayed when the field is empty and not focused.
+     */
     void setHint(const std::string& hint);
 
-    /** @brief Sets error validation message and switches state to Error. */
+    /**
+     * @brief Sets an error message and transitions the field to Error state.
+     * @param error Error string; if empty, clears error state and reverts to Normal/Focused.
+     */
     void setError(const std::string& error);
 
-    /** @brief Configures visual container style variant. */
+    /**
+     * @brief Configures the visual container style variant.
+     * @param style One of Outlined, Filled, or Underlined.
+     */
     void setStyle(TextFieldStyle style);
 
-    /** @brief Sets text font size in dp. */
+    /**
+     * @brief Sets the text font size in density-independent pixels (dp).
+     * @param sizeDp Font size in dp.
+     */
     void setTextSize(float sizeDp);
 
-    /** @brief Sets label font size in dp. */
+    /**
+     * @brief Sets the label font size in dp.
+     * @param sizeDp Label font size.
+     */
     void setLabelSize(float sizeDp);
 
-    /** @brief Sets container corner rounding radius in dp. */
+    /**
+     * @brief Sets the container corner radius in dp.
+     * @param radius Corner radius value.
+     */
     void setCornerRadius(float radius);
 
-    /** @brief Sets maximum allowed UTF-8 character length (-1 for unrestricted). */
+    /**
+     * @brief Sets the maximum number of UTF-8 characters allowed (-1 means unlimited).
+     * @param maxLen Maximum character count.
+     */
     void setMaxLength(int maxLen);
 
-    /** @brief Enables or disables read-only mode. */
+    /**
+     * @brief Enables or disables read-only mode.
+     * @param readonly If true, text modifications are prevented.
+     */
     void setReadOnly(bool readonly);
 
-    /** @brief Enables or disables password masking mode. */
+    /**
+     * @brief Enables or disables password masking (displays '*' instead of actual characters).
+     * @param password If true, display text is obscured.
+     */
     void setPassword(bool password);
 
-    /** @brief Sets leading icon descriptor. */
+    /**
+     * @brief Sets the leading (left) icon from an Icon descriptor.
+     * @param icon Icon structure containing asset or built-in token.
+     */
     void setLeadingIcon(const Icon& icon);
 
-    /** @brief Sets leading icon by token or asset path string. */
+    /**
+     * @brief Sets the leading icon from a string token or asset path.
+     * @param str Icon identifier (e.g., "search" or "ic_search.png").
+     */
     void setLeadingIcon(const std::string& str);
 
-    /** @brief Sets trailing icon descriptor. */
+    /**
+     * @brief Sets the trailing (right) icon from an Icon descriptor.
+     * @param icon Icon structure.
+     */
     void setTrailingIcon(const Icon& icon);
 
-    /** @brief Sets trailing icon by token or asset path string. */
+    /**
+     * @brief Sets the trailing icon from a string token or asset path.
+     * @param str Icon identifier.
+     */
     void setTrailingIcon(const std::string& str);
 
-    /** @brief Sets clear-action icon descriptor. */
+    /**
+     * @brief Sets the clear (X) icon from an Icon descriptor.
+     * @param icon Icon structure for the clear button.
+     */
     void setClearIcon(const Icon& icon);
 
-    /** @brief Sets clear-action icon by token or asset path string. */
+    /**
+     * @brief Sets the clear icon from a string token or asset path.
+     * @param str Icon identifier.
+     */
     void setClearIcon(const std::string& str);
 
-    /** @brief Sets icon bounding box dimension in dp. */
+    /**
+     * @brief Sets the icon bounding box size in dp.
+     * @param sizeDp Icon width/height in dp.
+     */
     void setIconSize(float sizeDp);
 
-    /** @brief Sets callback listener invoked on text modification. */
+    /**
+     * @brief Registers a callback that fires whenever text content changes.
+     * @param callback Function taking the new text string as argument.
+     */
     void setOnTextChanged(std::function<void(const std::string&)> callback);
 
-    /** @brief Sets submission callback listener invoked on Enter key press. */
+    /**
+     * @brief Registers a callback that fires when the user presses the Enter/Submit key.
+     * @param callback Function taking the current text string as argument.
+     */
     void setOnSubmit(std::function<void(const std::string&)> callback);
 
-    /** @brief Sets focus change callback listener. */
+    /**
+     * @brief Registers a callback for focus state changes.
+     * @param callback Function taking a boolean indicating focus state (true = gained).
+     */
     void setOnFocusChange(std::function<void(bool)> callback);
 
-    /** @brief Sets callback listener invoked when trailing icon is clicked. */
+    /**
+     * @brief Registers a callback for trailing icon click events.
+     * @param callback Function with no arguments.
+     */
     void setOnTrailingIconClick(std::function<void()> callback);
 
-    /** @brief Sets callback listener invoked when clear icon is clicked. */
+    /**
+     * @brief Registers a callback for clear icon click events.
+     * @param callback Function with no arguments.
+     */
     void setOnClearClick(std::function<void()> callback);
 
-    /** @brief Appends a single ASCII character at current cursor position. */
+    /**
+     * @brief Appends a single ASCII character at the current cursor position.
+     * @param c Character to insert.
+     * @note Does nothing if read-only or max length reached.
+     */
     void appendChar(char c);
 
-    /** @brief Appends a UTF-8 string at current cursor position. */
+    /**
+     * @brief Appends a UTF-8 string at the current cursor position.
+     * @param str String to insert (newline characters are replaced with spaces).
+     */
     void appendString(const std::string& str);
 
-    /** @brief Deletes character before cursor or removes active selection. */
+    /**
+     * @brief Deletes the character immediately before the cursor, or removes active selection.
+     */
     void backspace();
 
-    /** @brief Clears entire text buffer. */
+    /**
+     * @brief Clears the entire text buffer and resets cursor.
+     */
     void clear();
 
-    /** @brief Checks if a text range is actively highlighted. */
+    /**
+     * @brief Checks whether any text range is currently selected.
+     * @return true if a non-empty selection exists.
+     */
     bool hasSelection() const { return m_selectionStart >= 0 && m_selectionEnd >= 0 && m_selectionStart != m_selectionEnd; }
 
-    /** @brief Retrieves the highlighted text substring. */
+    /**
+     * @brief Retrieves the highlighted text substring.
+     * @return The selected text, or empty string if no selection.
+     */
     std::string getSelectedText() const;
 
-    /** @brief Deletes the highlighted text substring. */
+    /**
+     * @brief Deletes the currently selected text range.
+     */
     void deleteSelection();
 
-    /** @brief Selects entire text content. */
+    /**
+     * @brief Selects all text content.
+     */
     void selectAll();
 
-    /** @brief Clears active selection highlight. */
+    /**
+     * @brief Clears the active text selection.
+     */
     void clearSelection();
 
+    // --- View overrides ---
     float getPreferredWidth() override;
     float getPreferredHeight() override;
     void doLayout(float parentX, float parentY, float parentW, float parentH) override;
-
     void update(float dt) override;
     void render(MaterialShader& shader, MaterialTheme& theme) override;
-
     bool handleMouseMove(float mx, float my) override;
     bool handleMouseButton(int button, int action, float mx, float my) override;
     bool handleKey(int key, int action) override;
     bool handleChar(unsigned int codepoint) override;
-
     void onFocusGained() override;
     void onFocusLost() override;
 
-    /** @brief Resets hover states when cursor leaves view bounds. */
+    /**
+     * @brief Resets hover states when the mouse leaves the view bounds.
+     */
     void onMouseLeave() { 
         m_isHovering = false; 
         if (!m_hasFocus && m_error.empty()) m_state = TextFieldState::Normal; 
@@ -171,71 +268,87 @@ public:
 
     bool isFocusable() const override { return !m_readOnly; }
 
-    /** @brief Retrieves current raw text string. */
+    /**
+     * @brief Retrieves the current raw text string.
+     * @return Const reference to internal text buffer.
+     */
     const std::string& getText() const { return m_text; }
 
-    /** @brief Checks whether the component currently holds keyboard focus. */
+    /**
+     * @brief Checks whether the component currently holds keyboard focus.
+     * @return true if focused.
+     */
     bool isFocused() const { return m_hasFocus; }
 
 private:
+    // --- Rendering helpers for each style ---
     void renderOutlined(MaterialShader& shader, MaterialTheme& theme);
     void renderFilled(MaterialShader& shader, MaterialTheme& theme);
     void renderUnderlined(MaterialShader& shader, MaterialTheme& theme);
 
+    // --- Utility functions ---
     size_t getUtf8Length(const std::string& str) const;
     void updateDisplayText();
+    void rebuildCharOffsets(MaterialShader& shader, float fontSize);
+    void ensureCursorVisible(float maxTextWidth);
+
     M3Color getBorderColor(const MaterialTheme& theme) const;
     M3Color getLabelColor(const MaterialTheme& theme) const;
 
     int getCharIndexAtX(float localTextX) const;
     bool isInsideIconPos(float mx, float my, float iconCenterX, float iconCenterY, float hitRadius);
 
-    std::string m_text;
-    std::string m_label;
-    std::string m_hint;
-    std::string m_error;
-    std::string m_displayText;
-    
-    TextFieldStyle m_style = TextFieldStyle::Outlined;
-    TextFieldState m_state = TextFieldState::Normal;
+    // --- Data members ---
+    std::string m_text;              /**< Raw UTF-8 text content. */
+    std::string m_label;             /**< Floating label string. */
+    std::string m_hint;              /**< Placeholder hint text. */
+    std::string m_error;             /**< Error message (empty when no error). */
+    std::string m_displayText;       /**< Text displayed (masked if password mode). */
 
-    float m_textSizeDp = 16.0f;
-    float m_labelSizeDp = 14.0f;
-    float m_cornerRadius = 12.0f;
-    float m_iconSizeDp = 20.0f;
-    int m_maxLength = -1;
+    TextFieldStyle m_style = TextFieldStyle::Outlined;   /**< Current visual style. */
+    TextFieldState m_state = TextFieldState::Normal;     /**< Current interaction/validation state. */
 
-    Icon m_leadingIcon;
-    Icon m_trailingIcon;
-    Icon m_clearIcon;
-    
-    bool m_hasLeadingIcon = false;
-    bool m_hasTrailingIcon = false;
-    bool m_showClearIcon = false;
-    bool m_isClearHovered = false;
-    bool m_isTrailingHovered = false;
+    float m_textSizeDp = 16.0f;      /**< Font size for main text. */
+    float m_labelSizeDp = 14.0f;     /**< Font size for floating label. */
+    float m_cornerRadius = 12.0f;    /**< Corner rounding radius (dp). */
+    float m_iconSizeDp = 20.0f;      /**< Icon bounding square size (dp). */
+    int m_maxLength = -1;            /**< Maximum UTF-8 character count (-1 = unlimited). */
 
-    bool m_readOnly = false;
-    bool m_password = false;
-    bool m_hasFocus = false;
-    bool m_isHovering = false;
-    
-    float m_labelAnim = 0.0f;
-    float m_indicatorAnim = 0.0f;
-    float m_cursorBlink = 0.0f;
-    int m_cursorPos = 0;
+    Icon m_leadingIcon;              /**< Left-side icon. */
+    Icon m_trailingIcon;             /**< Right-side icon. */
+    Icon m_clearIcon;                /**< Clear button icon. */
 
-    float m_targetCursorX = -1.0f;
-    float m_smoothCursorX = -1.0f;
+    bool m_hasLeadingIcon = false;   /**< Whether a leading icon is set. */
+    bool m_hasTrailingIcon = false;  /**< Whether a trailing icon is set. */
+    bool m_showClearIcon = false;    /**< Whether the clear icon should be visible (focused + non‑empty). */
+    bool m_isClearHovered = false;   /**< Whether mouse hovers over clear icon. */
+    bool m_isTrailingHovered = false;/**< Whether mouse hovers over trailing icon. */
 
-    float m_preferredHeight = 56.0f;
+    bool m_readOnly = false;         /**< Disables text editing. */
+    bool m_password = false;         /**< Enables password masking. */
+    bool m_hasFocus = false;         /**< Keyboard focus flag. */
+    bool m_isHovering = false;       /**< Mouse hover flag. */
 
-    int m_selectionStart = -1;
-    int m_selectionEnd = -1;
-    bool m_isMouseSelecting = false;
-    float m_cachedTextRenderX = 0.0f;
-    std::vector<std::pair<int, float>> m_charByteOffsets;
+    float m_labelAnim = 0.0f;        /**< Floating label animation progress [0..1]. */
+    float m_indicatorAnim = 0.0f;    /**< Bottom indicator underline animation progress. */
+    float m_cursorBlink = 0.0f;      /**< Cursor blink phase timer (seconds). */
+    int m_cursorPos = 0;             /**< Cursor byte index in m_text. */
 
+    float m_scrollOffset = 0.0f;     /**< Horizontal scroll offset in pixels. */
+    float m_targetCursorX = -1.0f;   /**< Target cursor X position (for smooth animation). */
+    float m_smoothCursorX = -1.0f;   /**< Smoothed cursor X position. */
+
+    float m_preferredHeight = 56.0f; /**< Cached preferred height in dp. */
+
+    int m_selectionStart = -1;       /**< Selection start byte index, -1 if none. */
+    int m_selectionEnd = -1;         /**< Selection end byte index. */
+    bool m_isMouseSelecting = false; /**< Flag indicating drag selection in progress. */
+    float m_cachedTextRenderX = 0.0f;/**< Cached X position where text drawing starts. */
+
+    bool m_offsetsDirty = true;      /**< Flag indicating character offset cache needs rebuild. */
+    std::vector<std::pair<int, float>> m_charByteOffsets; /**< (byteIndex, xOffsetFromTextStart) for each character. */
+
+    // --- Callbacks ---
     std::function<void(const std::string&)> m_onTextChanged;
     std::function<void(const std::string&)> m_onSubmit;
     std::function<void(bool)> m_onFocusChange;
@@ -246,11 +359,14 @@ private:
 /**
  * @class TextFieldBuilder
  * @brief Fluent builder helper for constructing and configuring TextField instances.
+ * 
+ * Provides method-chaining syntax for setting all TextField properties before building.
  */
 class TextFieldBuilder {
 public:
     TextFieldBuilder();
 
+    // --- Property setters ---
     TextFieldBuilder& text(const std::string& t);
     TextFieldBuilder& label(const std::string& l);
     TextFieldBuilder& hint(const std::string& h);
@@ -267,6 +383,7 @@ public:
     TextFieldBuilder& height(float h);
     TextFieldBuilder& margins(float l, float t, float r, float b);
 
+    // --- Icon setters ---
     TextFieldBuilder& leadingIcon(const Icon& icon);
     TextFieldBuilder& leadingIcon(const std::string& str);
     TextFieldBuilder& trailingIcon(const Icon& icon);
@@ -274,6 +391,7 @@ public:
     TextFieldBuilder& clearIcon(const Icon& icon);
     TextFieldBuilder& clearIcon(const std::string& str);
 
+    // --- Callback setters ---
     TextFieldBuilder& onTextChanged(std::function<void(const std::string&)> cb);
     TextFieldBuilder& onSubmit(std::function<void(const std::string&)> cb);
     TextFieldBuilder& onFocusChange(std::function<void(bool)> cb);
@@ -282,12 +400,12 @@ public:
 
     /**
      * @brief Allocates and initializes the configured TextField instance.
-     * 
-     * @return TextField* Pointer to heap-allocated instance.
+     * @return Pointer to a new TextField object on the heap. Ownership is transferred to the caller.
      */
     TextField* build();
 
 private:
+    // --- Stored configuration values ---
     std::string m_text;
     std::string m_label;
     std::string m_hint;
@@ -300,7 +418,7 @@ private:
     int m_maxLength = -1;
     bool m_readOnly = false;
     bool m_password = false;
-    
+
     float m_width = WRAP_CONTENT;
     float m_height = WRAP_CONTENT;
     float m_marginLeft = 0.0f;
