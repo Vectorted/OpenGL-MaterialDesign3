@@ -2,7 +2,8 @@
  * @file View.hpp
  * @brief Core visual component node definitions and layout hierarchy infrastructure.
  * 
- * Part of the Material 3 OpenGL ES Component Library.
+ * Defines the fundamental View base class and ViewGroup container, providing
+ * layout, event handling, and rendering primitives for the Material 3 UI system.
  * 
  * @author Vectorted
  * @repository https://github.com/Vectorted
@@ -18,20 +19,25 @@
 
 /**
  * @brief Global high-DPI scaling multiplier.
+ * 
+ * This value is set by the application to convert density-independent pixels (dp)
+ * to physical screen pixels. Default is 1.0.
  */
 extern float g_dpiScale;
 
 /**
  * @brief Converts density-independent pixels (dp) to physical device pixels.
- * 
  * @param dpValue Value in dp.
- * @return float Equivalent pixel value scaled by current DPI.
+ * @return Value in physical pixels.
  */
 inline float dp(float dpValue) { return dpValue * g_dpiScale; }
 
 /**
  * @namespace Gravity
  * @brief Bitwise alignment flags for component positioning within parent containers.
+ * 
+ * These flags are used in conjunction with `layout_gravity` to control how a view
+ * is positioned inside its parent ViewGroup.
  */
 namespace Gravity {
     constexpr int NONE              = 0;       /**< No alignment preference specified. */
@@ -67,6 +73,9 @@ enum class Visibility {
 /**
  * @struct M3Ripple
  * @brief Transient visual state data for Material Design 3 radial ink ripples.
+ * 
+ * Stores the current animation parameters for a ripple effect originating from
+ * a touch or click event.
  */
 struct M3Ripple {
     bool active = false;      /**< Flag indicating if ripple animation is active. */
@@ -78,28 +87,26 @@ struct M3Ripple {
 };
 
 /**
- * @brief Special dimension parameter indicating component should match parent size.
- */
-constexpr float MATCH_PARENT = -1.0f;
-
-/**
- * @brief Special dimension parameter indicating component should wrap content bounds.
- */
-constexpr float WRAP_CONTENT = -2.0f;
-
-/**
  * @class View
  * @brief Fundamental base visual element for all UI components in the hierarchy.
+ * 
+ * Provides common properties: position, size, margins, padding, visibility,
+ * state management (hover/press), ripple animation, layout, event handling,
+ * and rendering. All concrete UI components derive from this class.
  */
 class View {
 public:
+    // --- Layout constants aligned with Android conventions ---
+    static constexpr float MATCH_PARENT = -1.0f; /**< Fill the parent's available space. */
+    static constexpr float WRAP_CONTENT = -2.0f; /**< Wrap to the content's preferred size. */
+
     float x = 0.0f;                              /**< Computed absolute X coordinate in pixels. */
     float y = 0.0f;                              /**< Computed absolute Y coordinate in pixels. */
     float width = 0.0f;                          /**< Computed layout width in pixels. */
     float height = 0.0f;                         /**< Computed layout height in pixels. */
     UIState state = UIState::Normal;             /**< Current interactive hover/press state. */
     Visibility visibility = Visibility::Visible; /**< Current layout visibility mode. */
-    bool isDestroyed = false;                    /**< Flag marking view for destruction. */
+    bool isDestroyed = false;                    /**< Flag marking view for destruction (deferred removal). */
 
     float layout_width = WRAP_CONTENT;           /**< Configured width in dp, MATCH_PARENT, or WRAP_CONTENT. */
     float layout_height = WRAP_CONTENT;          /**< Configured height in dp, MATCH_PARENT, or WRAP_CONTENT. */
@@ -118,14 +125,13 @@ public:
     float pressAnim = 0.0f;                      /**< Interpolated press transition weight [0.0, 1.0]. */
     M3Ripple ripple;                             /**< Active ripple animation state descriptor. */
 
-    /** @brief Constructs a default View instance. */
+    /** @brief Constructs a default View instance with zero bounds. */
     View() = default;
 
     /**
-     * @brief Constructs a View with explicit bounds.
-     * 
-     * @param x Initial X position.
-     * @param y Initial Y position.
+     * @brief Constructs a View with explicit initial bounds.
+     * @param x Initial X coordinate.
+     * @param y Initial Y coordinate.
      * @param w Initial width.
      * @param h Initial height.
      */
@@ -135,168 +141,148 @@ public:
     virtual ~View() = default;
 
     /**
-     * @brief Sets layout sizing parameters in dp or special constants.
-     * 
-     * @param width Width in dp, MATCH_PARENT, or WRAP_CONTENT.
-     * @param height Height in dp, MATCH_PARENT, or WRAP_CONTENT.
+     * @brief Sets layout sizing parameters in dp or special constants (MATCH_PARENT, WRAP_CONTENT).
+     * @param width Layout width (dp or constant).
+     * @param height Layout height (dp or constant).
      */
     void setLayoutParams(float width, float height);
 
     /**
      * @brief Sets external margins in dp.
-     * 
-     * @param left Left margin in dp.
-     * @param top Top margin in dp.
-     * @param right Right margin in dp.
-     * @param bottom Bottom margin in dp.
+     * @param left Left margin.
+     * @param top Top margin.
+     * @param right Right margin.
+     * @param bottom Bottom margin.
      */
     void setMargins(float left, float top, float right, float bottom);
 
     /**
      * @brief Sets internal padding in dp.
-     * 
-     * @param left Left padding in dp.
-     * @param top Top padding in dp.
-     * @param right Right padding in dp.
-     * @param bottom Bottom padding in dp.
+     * @param left Left padding.
+     * @param top Top padding.
+     * @param right Right padding.
+     * @param bottom Bottom padding.
      */
     void setPadding(float left, float top, float right, float bottom);
 
     /**
      * @brief Sets container layout alignment gravity.
-     * 
-     * @param grav Combination of Gravity bit flags.
+     * @param grav Gravity flags (bitwise OR of Gravity constants).
      */
     void setLayoutGravity(int grav) { layout_gravity = grav; }
 
     /**
      * @brief Retrieves configured layout gravity.
-     * 
-     * @return Integer representing Gravity bit flags.
+     * @return Gravity flags.
      */
     int getLayoutGravity() const { return layout_gravity; }
 
     /**
      * @brief Sets component visibility mode.
-     * 
-     * @param v Target Visibility mode.
+     * @param v Desired Visibility.
      */
     void setVisibility(Visibility v) { visibility = v; }
 
     /**
      * @brief Retrieves current component visibility mode.
-     * 
-     * @return Visibility enumeration state.
+     * @return Current Visibility.
      */
     Visibility getVisibility() const { return visibility; }
 
     /**
-     * @brief Checks if component is gone from layout calculation.
-     * 
-     * @return true if visibility is Gone or view is destroyed, false otherwise.
+     * @brief Checks if component is gone (not participating in layout).
+     * @return true if visibility is Gone or the view is marked for destruction.
      */
     bool isGone() const { return visibility == Visibility::Gone || isDestroyed; }
 
     /**
      * @brief Checks if component is active and visible.
-     * 
-     * @return true if visible and not destroyed, false otherwise.
+     * @return true if visible and not destroyed.
      */
     bool isVisible() const { return visibility == Visibility::Visible && !isDestroyed; }
 
     /**
      * @brief Calculates ideal preferred width based on content metrics.
-     * 
      * @return Preferred width in dp.
      */
     virtual float getPreferredWidth();
 
     /**
      * @brief Calculates ideal preferred height based on content metrics.
-     * 
      * @return Preferred height in dp.
      */
     virtual float getPreferredHeight();
 
     /**
-     * @brief Updates internal animation states and interpolations.
-     * 
-     * @param dt Delta time elapsed since previous frame in seconds.
+     * @brief Updates internal animation states (hover, press, ripple) over time.
+     * @param dt Delta time in seconds since last update.
      */
     virtual void update(float dt);
 
     /**
      * @brief Calculates absolute screen coordinates and resolves child layout boundaries.
-     * 
-     * @param parentX Parent origin X in pixels.
-     * @param parentY Parent origin Y in pixels.
-     * @param parentW Allocated parent bounding width in pixels.
-     * @param parentH Allocated parent bounding height in pixels.
+     * @param parentX Parent container's X coordinate.
+     * @param parentY Parent container's Y coordinate.
+     * @param parentW Parent container's width.
+     * @param parentH Parent container's height.
      */
     virtual void doLayout(float parentX, float parentY, float parentW, float parentH);
 
     /**
-     * @brief Renders visual elements via OpenGL shader pipeline.
-     * 
-     * @param renderer MaterialShader rendering pipeline instance.
-     * @param theme MaterialTheme color token provider.
+     * @brief Renders visual elements via the OpenGL shader pipeline.
+     * @param renderer Reference to the MaterialShader renderer.
+     * @param theme Current MaterialTheme for color tokens.
      */
     virtual void render(MaterialShader& renderer, MaterialTheme& theme);
 
     /**
      * @brief Handles mouse movement events and updates hover states.
-     * 
-     * @param mx Cursor X position in pixels.
-     * @param my Cursor Y position in pixels.
-     * @return true if event was consumed by this view, false otherwise.
+     * @param mx Mouse X coordinate in screen space.
+     * @param my Mouse Y coordinate in screen space.
+     * @return true if the event was consumed.
      */
     virtual bool handleMouseMove(float mx, float my);
 
     /**
      * @brief Handles mouse button press and release events.
-     * 
-     * @param button GLFW mouse button code.
-     * @param action GLFW action (e.g. GLFW_PRESS, GLFW_RELEASE).
-     * @param mx Cursor X position in pixels.
-     * @param my Cursor Y position in pixels.
-     * @return true if event was consumed, false otherwise.
+     * @param button Mouse button identifier (GLFW constant).
+     * @param action GLFW_PRESS or GLFW_RELEASE.
+     * @param mx Mouse X coordinate.
+     * @param my Mouse Y coordinate.
+     * @return true if the event was consumed.
      */
     virtual bool handleMouseButton(int button, int action, float mx, float my);
 
     /**
      * @brief Handles scrolling wheel gestures.
-     * 
-     * @param mx Cursor X position in pixels.
-     * @param my Cursor Y position in pixels.
-     * @param ox Horizontal scroll offset delta.
-     * @param oy Vertical scroll offset delta.
-     * @return true if event was consumed, false otherwise.
+     * @param mx Mouse X coordinate (unused by default).
+     * @param my Mouse Y coordinate (unused by default).
+     * @param ox Horizontal scroll delta.
+     * @param oy Vertical scroll delta.
+     * @return true if consumed.
      */
     virtual bool handleScroll(float mx, float my, float ox, float oy);
 
     /**
      * @brief Handles keyboard key events.
-     * 
      * @param key GLFW key code.
-     * @param action GLFW key action.
-     * @return true if event was consumed, false otherwise.
+     * @param action GLFW_PRESS, GLFW_RELEASE, or GLFW_REPEAT.
+     * @return true if consumed.
      */
     virtual bool handleKey(int key, int action);
 
     /**
      * @brief Handles raw text Unicode input codepoints.
-     * 
-     * @param codepoint Decoded UTF-32 character.
-     * @return true if consumed, false otherwise.
+     * @param codepoint Unicode code point.
+     * @return true if consumed.
      */
     virtual bool handleChar(unsigned int codepoint);
 
     /**
      * @brief Tests if a physical coordinate falls within this view's bounding box.
-     * 
-     * @param px Target X coordinate in pixels.
-     * @param py Target Y coordinate in pixels.
-     * @return true if inside bounding box, false otherwise.
+     * @param px X coordinate in screen space.
+     * @param py Y coordinate in screen space.
+     * @return true if inside.
      */
     bool isInside(float px, float py);
 
@@ -311,8 +297,7 @@ public:
 
     /**
      * @brief Checks if view can receive keyboard focus.
-     * 
-     * @return true if focusable, false otherwise.
+     * @return true if focusable.
      */
     virtual bool isFocusable() const { return false; }
 };
@@ -320,6 +305,10 @@ public:
 /**
  * @class ViewGroup
  * @brief Base composite container class managing child view collections and event routing.
+ * 
+ * Extends View to support a list of children. Handles layout, rendering,
+ * and event dispatch to children in reverse order (topmost first).
+ * Also manages child destruction and deferred removal.
  */
 class ViewGroup : public View {
 public:
@@ -330,34 +319,29 @@ public:
 
     /**
      * @brief Constructs a ViewGroup with explicit bounds.
-     * 
-     * @param x Initial X position.
-     * @param y Initial Y position.
+     * @param x Initial X coordinate.
+     * @param y Initial Y coordinate.
      * @param w Initial width.
      * @param h Initial height.
      */
     ViewGroup(float x, float y, float w, float h) : View(x, y, w, h) {}
 
-    /** @brief Virtual destructor. Automatically releases managed child views. */
+    /** @brief Virtual destructor – deletes all children. */
     virtual ~ViewGroup();
 
     /**
-     * @brief Appends a child view into this container.
-     * 
-     * @param child Pointer to child View.
+     * @brief Adds a child view to the container.
+     * @param child Pointer to the child view (ownership transferred).
      */
     void addView(View* child);
 
     /**
-     * @brief Marks a child view for asynchronous destruction.
-     * 
-     * @param child Pointer to child View to remove.
+     * @brief Marks a child for removal (deferred deletion).
+     * @param child Pointer to the child view.
      */
     void removeView(View* child);
 
-    /**
-     * @brief Marks all child views for removal and destruction.
-     */
+    /** @brief Marks all children for removal. */
     void removeAllViews();
 
     void update(float dt) override;
@@ -370,3 +354,7 @@ public:
     bool handleKey(int key, int action) override;
     bool handleChar(unsigned int codepoint) override;
 };
+
+// --- Global scope aliases for backward compatibility with existing code ---
+inline constexpr float MATCH_PARENT = View::MATCH_PARENT;
+inline constexpr float WRAP_CONTENT = View::WRAP_CONTENT;
