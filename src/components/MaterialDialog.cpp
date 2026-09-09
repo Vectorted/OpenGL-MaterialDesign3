@@ -1,6 +1,6 @@
 /**
  * @file MaterialDialog.cpp
- * @brief Implementation of modal dialog rendering, text word-wrapping, scrim overlays, and transition animations.
+ * @brief Implementation of MaterialDialog with scrolling, wrapping, and animation.
  * 
  * Part of the Material 3 OpenGL ES Component Library.
  * 
@@ -11,208 +11,271 @@
  */
 
 #include "MaterialDialog.hpp"
-#include <glad/glad.h>
 #include <GLFW/glfw3.h>
-#include <cmath>
-#include <algorithm>
-#include <sstream>
 
-extern void requestUIWakeup(double seconds);
-
-/**
- * @struct ScissorGuard
- * @brief RAII guard that safely manages OpenGL scissor state, intersecting with parent scissor and restoring on destruction.
- * 
- * Ensures rendering is clipped to the desired rectangle while respecting any existing scissor restrictions,
- * and automatically restores the previous state when the guard goes out of scope.
- */
-struct ScissorGuard {
-    GLboolean wasEnabled = GL_FALSE; /**< Saved enabled state of GL_SCISSOR_TEST. */
-    GLint prevBox[4] = { 0, 0, 0, 0 }; /**< Saved scissor box [x, y, width, height]. */
-
+namespace {
     /**
-     * @brief Constructs the guard and sets the scissor box to the intersection of the given rect and the parent scissor.
-     * @param x Left coordinate (screen space).
-     * @param y Bottom coordinate (screen space).
-     * @param w Width.
-     * @param h Height.
+     * @brief Creates a dialog‑specific theme by applying an alpha to the surface container.
+     * @param theme Base theme.
+     * @param alpha Opacity factor [0..1].
+     * @return Modified theme.
      */
-    ScissorGuard(int x, int y, int w, int h) {
-        wasEnabled = glIsEnabled(GL_SCISSOR_TEST);
-        glGetIntegerv(GL_SCISSOR_BOX, prevBox);
-
-        if (w < 0) w = 0;
-        if (h < 0) h = 0;
-
-        int finalX = x;
-        int finalY = y;
-        int finalW = w;
-        int finalH = h;
-
-        if (wasEnabled) {
-            int pX1 = prevBox[0];
-            int pY1 = prevBox[1];
-            int pX2 = prevBox[0] + prevBox[2];
-            int pY2 = prevBox[1] + prevBox[3];
-
-            int cX1 = x;
-            int cY1 = y;
-            int cX2 = x + w;
-            int cY2 = y + h;
-
-            int iX1 = std::max(pX1, cX1);
-            int iY1 = std::max(pY1, cY1);
-            int iX2 = std::min(pX2, cX2);
-            int iY2 = std::min(pY2, cY2);
-
-            finalX = iX1;
-            finalY = iY1;
-            finalW = std::max(0, iX2 - iX1);
-            finalH = std::max(0, iY2 - iY1);
-        }
-
-        glEnable(GL_SCISSOR_TEST);
-        glScissor(finalX, finalY, finalW, finalH);
+    static MaterialTheme createDialogTheme(const MaterialTheme& theme, float alpha) {
+        MaterialTheme t = theme;
+        t.surface = theme.surfaceContainerHigh;
+        return t.withAlpha(alpha);
     }
 
     /**
-     * @brief Destructor restores the original scissor state (enable/disable and box).
+     * @struct ScissorGuard
+     * @brief RAII guard that safely intersects the current scissor box with a new region.
+     * 
+     * Enables scissor test, calculates intersection with any existing scissor,
+     * and restores the previous state on destruction.
      */
-    ~ScissorGuard() {
-        if (wasEnabled) {
-            glScissor(prevBox[0], prevBox[1], prevBox[2], prevBox[3]);
-        } else {
-            glDisable(GL_SCISSOR_TEST);
+    struct ScissorGuard {
+        GLboolean wasEnabled;
+        GLint lastScissor[4];
+
+        /**
+         * @brief Constructs the guard and sets the scissor box to the intersection.
+         * @param x Left coordinate (screen space).
+         * @param y Bottom coordinate (screen space).
+         * @param w Width.
+         * @param h Height.
+         */
+        ScissorGuard(int x, int y, int w, int h) {
+            wasEnabled = glIsEnabled(GL_SCISSOR_TEST);
+            glGetIntegerv(GL_SCISSOR_BOX, lastScissor);
+            glEnable(GL_SCISSOR_TEST);
+
+            if (wasEnabled) {
+                int nx = std::max(x, lastScissor[0]);
+                int ny = std::max(y, lastScissor[1]);
+                int nr = std::min(x + w, lastScissor[0] + lastScissor[2]);
+                int nt = std::min(y + h, lastScissor[1] + lastScissor[3]);
+                glScissor(nx, ny, std::max(0, nr - nx), std::max(0, nt - ny));
+            } else {
+                glScissor(x, y, std::max(0, w), std::max(0, h));
+            }
         }
-    }
-};
 
-// --- DialogButton implementation ---
-
-DialogButton::DialogButton(const std::string& text, bool isPrimary, std::function<void()> action)
-    : text(text), isPrimary(isPrimary), action(std::move(action)) {
+        /** @brief Restores the original scissor state. */
+        ~ScissorGuard() {
+            if (wasEnabled) {
+                glScissor(lastScissor[0], lastScissor[1], lastScissor[2], lastScissor[3]);
+            } else {
+                glDisable(GL_SCISSOR_TEST);
+            }
+        }
+    };
 }
 
-void DialogButton::onClick() { 
-    if (action) action(); 
+DialogButton::DialogButton(const std::string& text, DialogButtonStyle style)
+    : m_text(text), m_style(style) {
+    setLayoutParams(MATCH_PARENT, MATCH_PARENT);
+}
+
+void DialogButton::doLayout(float parentX, float parentY, float parentW, float parentH) {
+    x = parentX;
+    y = parentY;
+    width = parentW;
+    height = parentH;
 }
 
 void DialogButton::render(MaterialShader& renderer, MaterialTheme& theme) {
-    float pX = std::round(x);
-    float pY = std::round(y);
-    float pW = std::round(width);
-    float pH = std::round(height);
-    float radius = pH * 0.5f;
+    if (!isVisible() || m_parentAlpha <= 0.001f) return;
 
-    float stateLayerAlpha = hoverAnim * 0.08f + pressAnim * 0.12f;
+    float r = dp(20.0f);
+    M3Color bg = { 0.0f, 0.0f, 0.0f, 0.0f };
+    M3Color textCol;
 
-    M3Color contentColor = isPrimary ? theme.primary : theme.onSurfaceVariant;
-    contentColor.a *= m_dialogAlpha;
+    if (m_style == DialogButtonStyle::Filled) {
+        bg = theme.primary;
+        textCol = theme.onPrimary;
+        if (hoverAnim > 0.001f) {
+            bg.r = std::min(1.0f, bg.r + 0.08f * hoverAnim);
+            bg.g = std::min(1.0f, bg.g + 0.08f * hoverAnim);
+            bg.b = std::min(1.0f, bg.b + 0.08f * hoverAnim);
+        }
+    } else {
+        bg = theme.primary;
+        bg.a = 0.0f;
+        textCol = theme.primary;
+        if (hoverAnim > 0.001f) bg.a = 0.08f * hoverAnim;
+    }
 
-    if (stateLayerAlpha > 0.001f) {
-        M3Color hoverColor = contentColor;
-        hoverColor.a = stateLayerAlpha * m_dialogAlpha;
-        renderer.drawM3UI(pX, pY, pW, pH, radius, radius, radius, radius, hoverColor);
+    bg.a *= m_parentAlpha;
+    textCol.a *= m_parentAlpha;
+
+    if (bg.a > 0.001f) {
+        renderer.drawM3UI(std::round(x), std::round(y), std::round(width), std::round(height), r, r, r, r, bg);
     }
 
     float fontSize = dp(14.0f);
-    float textW = renderer.getTextWidth(text, fontSize);
-    float textX = std::round(pX + (pW - textW) * 0.5f);
-    float textY = std::round(pY + (pH - fontSize) * 0.5f);
-
-    renderer.drawText(text, textX, textY, fontSize, contentColor);
+    float textW = renderer.getTextWidth(m_text, fontSize);
+    float textX = x + (width - textW) * 0.5f;
+    float textY = y + (height - fontSize) * 0.5f;
+    renderer.drawText(m_text, std::round(textX), std::round(textY), fontSize, textCol);
 }
-
-// --- MaterialDialog implementation ---
 
 MaterialDialog::MaterialDialog(const std::string& title, const std::string& content)
     : m_title(title), m_content(content) {
-    layout_width = MATCH_PARENT; 
-    layout_height = MATCH_PARENT;
+    setVisibility(Visibility::Gone);
+}
+
+void MaterialDialog::setContent(const std::string& content) { 
+    m_content = content; 
+    m_textDirty = true; 
+}
+
+void MaterialDialog::setCustomView(View* view) {
+    if (m_customView && m_customView != view) {
+        removeView(m_customView);
+    }
+    m_customView = view;
+    if (m_customView) {
+        addView(m_customView);
+    }
 }
 
 void MaterialDialog::setActions(const std::string& cancelText, std::function<void()> onCancel,
                                 const std::string& confirmText, std::function<void()> onConfirm) {
-    m_btnCancel = new DialogButton(cancelText, false, [this, onCancel]() { 
-        if (onCancel) onCancel(); 
-        dismiss(); 
-    });
-    m_btnConfirm = new DialogButton(confirmText, true, [this, onConfirm]() { 
-        if (onConfirm) onConfirm(); 
-        dismiss(); 
-    });
-    addView(m_btnCancel); 
-    addView(m_btnConfirm);
+    if (!cancelText.empty()) {
+        if (!m_btnCancel) {
+            m_btnCancel = new DialogButton(cancelText, DialogButtonStyle::Text);
+            addView(m_btnCancel);
+        } else {
+            m_btnCancel->setText(cancelText);
+        }
+        m_btnCancel->setOnClick([this, onCancel]() {
+            if (onCancel) onCancel();
+            dismiss();
+        });
+    }
+
+    if (!confirmText.empty()) {
+        if (!m_btnConfirm) {
+            m_btnConfirm = new DialogButton(confirmText, DialogButtonStyle::Filled);
+            addView(m_btnConfirm);
+        } else {
+            m_btnConfirm->setText(confirmText);
+        }
+        m_btnConfirm->setOnClick([this, onConfirm]() {
+            if (onConfirm) onConfirm();
+            dismiss();
+        });
+    }
 }
 
-void MaterialDialog::show() { 
-    m_isOpen = true; 
+void MaterialDialog::show() {
+    setVisibility(Visibility::Visible);
+    m_isOpen = true;
     m_targetScrollY = 0.0f;
     m_currentScrollY = 0.0f;
-    m_isThumbDragging = false;
-    m_isContentDragging = false;
-    requestUIWakeup(0.1);
+    m_isPressedInsideCard = false;
 }
 
-void MaterialDialog::dismiss() { 
-    m_isOpen = false; 
-    m_isThumbDragging = false;
-    m_isContentDragging = false;
-    requestUIWakeup(0.1);
+void MaterialDialog::dismiss() {
+    m_isOpen = false;
 }
 
 void MaterialDialog::update(float dt) {
-    ViewGroup::update(dt);
-    float dtSafe = std::min(dt, 0.033f);
-    bool needFrame = false;
+    if (isGone()) return;
 
-    // 1. Dialog open/close animation
-    float speed = (m_isOpen ? 6.0f : 8.0f) * dtSafe;
+    ViewGroup::update(dt);
+
     if (m_isOpen) {
-        if (m_animProgress < 1.0f) {
-            m_animProgress = std::min(1.0f, m_animProgress + speed);
-            needFrame = true;
+        float diff = 1.0f - m_animProgress;
+        if (diff > 0.001f) {
+            m_animProgress += diff * (1.0f - std::exp(-22.0f * dt));
+        } else {
+            m_animProgress = 1.0f;
         }
     } else {
-        if (m_animProgress > 0.0f) {
-            m_animProgress = std::max(0.0f, m_animProgress - speed);
-            needFrame = true;
+        float diff = 0.0f - m_animProgress;
+        m_animProgress += diff * (1.0f - std::exp(-30.0f * dt));
+        if (m_animProgress <= 0.02f) {
+            m_animProgress = 0.0f;
+            setVisibility(Visibility::Gone);
         }
     }
 
-    // 2. Inertial smooth damping scrolling
-    if (std::abs(m_targetScrollY - m_currentScrollY) > 0.2f) {
-        m_currentScrollY += (m_targetScrollY - m_currentScrollY) * (1.0f - std::exp(-22.0f * dtSafe));
-        needFrame = true;
+    if (std::abs(m_currentScrollY - m_targetScrollY) > 0.1f) {
+        m_currentScrollY += (m_targetScrollY - m_currentScrollY) * (1.0f - std::exp(-20.0f * dt));
     } else {
         m_currentScrollY = m_targetScrollY;
     }
+}
 
-    for (auto* child : children) {
-        if (DialogButton* btn = dynamic_cast<DialogButton*>(child)) {
-            btn->m_dialogAlpha = m_animProgress;
-        }
+void MaterialDialog::doLayout(float parentX, float parentY, float parentW, float parentH) {
+    x = parentX; 
+    y = parentY; 
+    width = parentW; 
+    height = parentH;
+
+    // 1. Determine card width: prefer custom, then layout_width, then custom view’s preferred, then fallback.
+    float targetCardW = 0.0f;
+    if (m_customCardW > 0.0f) {
+        targetCardW = dp(m_customCardW);
+    } else if (layout_width > 0.0f && layout_width != MATCH_PARENT) {
+        targetCardW = dp(layout_width);
+    } else if (m_customView && m_customView->getPreferredWidth() > 0.0f) {
+        targetCardW = m_customView->getPreferredWidth() + dp(48.0f);
+    } else {
+        targetCardW = parentW * 0.82f;
+    }
+    m_cardW = std::clamp(targetCardW, dp(240.0f), std::max(dp(240.0f), parentW - dp(32.0f)));
+
+    float contentAvailableW = m_cardW - dp(24.0f) * 2.0f;
+    if (!m_customView && std::abs(m_lastLayoutW - m_cardW) > 1.0f) {
+        m_lastLayoutW = m_cardW;
+        m_textDirty = true;
     }
 
-    if (needFrame) {
-        requestUIWakeup(0.1);
+    float headerH = m_title.empty() ? dp(24.0f) : dp(76.0f);
+    float actionsH = (m_btnCancel || m_btnConfirm) ? dp(88.0f) : dp(24.0f);
+
+    // 2. Determine card height: prefer custom, then layout_height, else compute from content.
+    float targetCardH = 0.0f;
+    if (m_customCardH > 0.0f) {
+        targetCardH = dp(m_customCardH);
+    } else if (layout_height > 0.0f && layout_height != MATCH_PARENT) {
+        targetCardH = dp(layout_height);
+    } else {
+        float bodyH = 0.0f;
+        if (m_customView) {
+            bodyH = m_customView->getPreferredHeight();
+            if (bodyH <= 0.0f) bodyH = dp(240.0f);
+        } else {
+            bodyH = m_totalContentH;
+        }
+        targetCardH = headerH + bodyH + actionsH;
+    }
+
+    float maxAllowedH = std::max(dp(160.0f), parentH - dp(40.0f));
+    m_cardH = std::clamp(targetCardH, dp(140.0f), maxAllowedH);
+
+    m_cardX = x + (width - m_cardW) / 2.0f;
+    m_cardY = y + (height - m_cardH) / 2.0f;
+
+    m_contentViewportH = m_cardH - headerH - actionsH;
+    if (m_contentViewportH < dp(30.0f)) m_contentViewportH = dp(30.0f);
+
+    if (m_customView) {
+        m_customView->doLayout(m_cardX + dp(24.0f), m_cardY + headerH, contentAvailableW, m_contentViewportH);
+    } else {
+        float maxScroll = std::max(0.0f, m_totalContentH - m_contentViewportH);
+        m_targetScrollY = std::clamp(m_targetScrollY, 0.0f, maxScroll);
+        m_currentScrollY = std::clamp(m_currentScrollY, 0.0f, maxScroll);
     }
 }
 
-/**
- * @brief High-performance UTF-8 adaptive word-wrapping algorithm supporting CJK characters, long word truncation, and paragraph handling.
- * 
- * Measures character widths using heuristics: Latin/numbers ~0.55×fontSize, CJK/emojis ~1.05×fontSize.
- * Lines are broken at spaces or when the accumulated width exceeds the given maximum.
- */
-void MaterialDialog::updateWrapLines(float maxTextWidth) {
+void MaterialDialog::updateWrapLines(MaterialShader& renderer, float maxTextWidth) {
     m_wrappedLines.clear();
     if (m_content.empty() || maxTextWidth <= 0.0f) return;
 
-    float fontSize = dp(14.0f);
-    float latinCharWidth = fontSize * 0.55f; // Approximate width for Latin letters/digits
-    float cjkCharWidth = fontSize * 1.05f;    // Approximate width for CJK/emoji characters
-
+    const float fontSize = dp(14.0f);
     std::istringstream stream(m_content);
     std::string paragraph;
 
@@ -222,335 +285,230 @@ void MaterialDialog::updateWrapLines(float maxTextWidth) {
             continue;
         }
 
-        std::string currentLine;
-        float currentLineWidth = 0.0f;
-
+        std::string curLine = "";
         for (size_t i = 0; i < paragraph.length(); ) {
             unsigned char c = static_cast<unsigned char>(paragraph[i]);
-            size_t charLen = 1;
-            float charW = latinCharWidth;
+            if (c == '\r') { i++; continue; }
 
-            // UTF-8 multi-byte character detection (CJK / Emoji)
+            size_t cLen = 1;
             if (c >= 0x80) {
-                if ((c & 0xE0) == 0xC0) charLen = 2;
-                else if ((c & 0xF0) == 0xE0) charLen = 3;
-                else if ((c & 0xF8) == 0xF0) charLen = 4;
-                charW = cjkCharWidth;
-            } else {
-                if (c == '\t') charW = latinCharWidth * 4;
+                if ((c & 0xE0) == 0xC0) cLen = 2;
+                else if ((c & 0xF0) == 0xE0) cLen = 3;
+                else if ((c & 0xF8) == 0xF0) cLen = 4;
             }
 
-            if (i + charLen > paragraph.length()) break;
-            std::string ch = paragraph.substr(i, charLen);
-            i += charLen;
+            if (i + cLen > paragraph.length()) break;
+            std::string ch = paragraph.substr(i, cLen);
+            i += cLen;
 
-            // Handle inline line breaks
-            if (ch == "\r") continue;
             if (ch == "\n") {
-                m_wrappedLines.push_back(currentLine);
-                currentLine.clear();
-                currentLineWidth = 0.0f;
+                m_wrappedLines.push_back(curLine);
+                curLine.clear();
                 continue;
             }
 
-            // Force line break if width exceeds limit
-            if (currentLineWidth + charW > maxTextWidth) {
-                if (!currentLine.empty()) {
-                    m_wrappedLines.push_back(currentLine);
-                    currentLine.clear();
-                    currentLineWidth = 0.0f;
+            std::string testLine = curLine + ch;
+            if (renderer.getTextWidth(testLine, fontSize) > maxTextWidth) {
+                if (!curLine.empty()) {
+                    m_wrappedLines.push_back(curLine);
+                    curLine.clear();
                 }
+                if (ch != " ") curLine = ch;
+            } else {
+                curLine = testLine;
             }
-
-            currentLine += ch;
-            currentLineWidth += charW;
         }
-
-        if (!currentLine.empty()) {
-            m_wrappedLines.push_back(currentLine);
-        }
+        if (!curLine.empty()) m_wrappedLines.push_back(curLine);
     }
-
     m_totalContentH = m_wrappedLines.size() * dp(22.0f);
 }
 
-void MaterialDialog::doLayout(float parentX, float parentY, float parentW, float parentH) {
-    x = parentX; 
-    y = parentY; 
-    width = parentW; 
-    height = parentH;
-    m_cardW = std::clamp(parentW * 0.82f, dp(280.0f), dp(560.0f));
-
-    // Content available width: 24dp margins on each side, plus 12dp scrollbar spacing on the right.
-    float contentAvailableW = m_cardW - dp(24.0f) * 2.0f - dp(12.0f);
-
-    if (m_textDirty || std::abs(m_lastLayoutW - m_cardW) > 1.0f) {
-        m_lastLayoutW = m_cardW;
-        m_textDirty = false;
-        updateWrapLines(contentAvailableW);
-    }
-
-    float maxAllowedH = parentH * 0.82f;
-    float desiredH = dp(76.0f) + m_totalContentH + dp(64.0f);
-    m_cardH = std::clamp(desiredH, dp(160.0f), maxAllowedH);
-
-    m_cardX = x + (width - m_cardW) / 2.0f;
-    m_cardY = y + (height - m_cardH) / 2.0f;
-
-    // Content viewport height (title area ~68dp, action bar ~56dp)
-    m_contentViewportH = m_cardH - dp(68.0f) - dp(56.0f);
-    if (m_contentViewportH < dp(30.0f)) m_contentViewportH = dp(30.0f);
-
-    float maxScroll = std::max(0.0f, m_totalContentH - m_contentViewportH);
-    m_targetScrollY = std::clamp(m_targetScrollY, 0.0f, maxScroll);
-    m_currentScrollY = std::clamp(m_currentScrollY, 0.0f, maxScroll);
-
-    if (m_btnCancel && m_btnConfirm) {
-        float btnY = m_cardY + m_cardH - dp(48.0f);
-        m_btnCancel->doLayout(m_cardX + m_cardW - dp(180.0f), btnY, dp(80.0f), dp(40.0f));
-        m_btnConfirm->doLayout(m_cardX + m_cardW - dp(90.0f), btnY, dp(80.0f), dp(40.0f));
-    }
-}
-
-bool MaterialDialog::handleMouseMove(float mx, float my) {
-    if (m_animProgress < 0.01f) return false;
-
-    float maxScroll = std::max(0.0f, m_totalContentH - m_contentViewportH);
-
-    // 1. Handle scrollbar thumb dragging
-    if (m_isThumbDragging && maxScroll > 0.0f) {
-        float contentTopY = m_cardY + dp(68.0f);
-        float trackH = m_contentViewportH;
-        float thumbH = std::max(dp(28.0f), (m_contentViewportH / m_totalContentH) * trackH);
-        float travelH = trackH - thumbH;
-
-        if (travelH > 0.0f) {
-            float deltaY = my - m_dragStartY;
-            float scrollDelta = (deltaY / travelH) * maxScroll;
-            m_targetScrollY = std::clamp(m_dragStartScrollY + scrollDelta, 0.0f, maxScroll);
-            m_currentScrollY = m_targetScrollY;
-            requestUIWakeup(0.1);
-        }
-        return true;
-    }
-
-    // 2. Handle content area dragging
-    if (m_isContentDragging && maxScroll > 0.0f) {
-        float deltaY = my - m_dragStartY;
-        m_targetScrollY = std::clamp(m_dragStartScrollY - deltaY, 0.0f, maxScroll);
-        m_currentScrollY = m_targetScrollY;
-        requestUIWakeup(0.1);
-        return true;
-    }
-
-    ViewGroup::handleMouseMove(mx, my);
-    return true;
-}
-
-bool MaterialDialog::handleMouseButton(int button, int action, float mx, float my) {
-    if (m_animProgress < 0.01f) return false;
-
-    bool hitChild = ViewGroup::handleMouseButton(button, action, mx, my);
-
-    if (button == GLFW_MOUSE_BUTTON_LEFT) {
-        if (action == GLFW_PRESS) {
-            float contentTopY = m_cardY + dp(68.0f);
-            float contentBottomY = m_cardY + m_cardH - dp(56.0f);
-            float maxScroll = std::max(0.0f, m_totalContentH - m_contentViewportH);
-
-            // Precise scrollbar hit detection (with 18dp hot zone)
-            if (maxScroll > 0.0f) {
-                float scrollbarW = dp(6.0f);
-                float thumbX = m_cardX + m_cardW - dp(10.0f) - scrollbarW;
-                float trackH = m_contentViewportH;
-                float thumbH = std::max(dp(28.0f), (m_contentViewportH / m_totalContentH) * trackH);
-                float scrollRatio = (maxScroll > 0.0f) ? (m_targetScrollY / maxScroll) : 0.0f;
-                float thumbY = contentTopY + scrollRatio * (trackH - thumbH);
-
-                if (mx >= thumbX - dp(10.0f) && mx <= thumbX + scrollbarW + dp(10.0f) &&
-                    my >= contentTopY && my <= contentBottomY) {
-                    
-                    if (my < thumbY) {
-                        m_targetScrollY = std::clamp(m_targetScrollY - m_contentViewportH * 0.8f, 0.0f, maxScroll);
-                    } else if (my > thumbY + thumbH) {
-                        m_targetScrollY = std::clamp(m_targetScrollY + m_contentViewportH * 0.8f, 0.0f, maxScroll);
-                    }
-
-                    m_isThumbDragging = true;
-                    m_dragStartY = my;
-                    m_dragStartScrollY = m_targetScrollY;
-                    requestUIWakeup(0.1);
-                    return true;
-                }
-            }
-
-            // Content area drag detection
-            bool inContentArea = (mx >= m_cardX + dp(24.0f) && mx <= m_cardX + m_cardW - dp(24.0f) &&
-                                  my >= contentTopY && my <= contentBottomY);
-
-            if (inContentArea && maxScroll > 0.0f && !hitChild) {
-                m_isContentDragging = true;
-                m_dragStartY = my;
-                m_dragStartScrollY = m_targetScrollY;
-                return true;
-            }
-
-            // Dismiss if clicking outside the card area (on the scrim)
-            if (!hitChild) {
-                if (mx < m_cardX || mx > m_cardX + m_cardW || my < m_cardY || my > m_cardY + m_cardH) {
-                    dismiss();
-                }
-            }
-        }
-        else if (action == GLFW_RELEASE) {
-            m_isThumbDragging = false;
-            m_isContentDragging = false;
-        }
-    }
-    return true;
-}
-
-bool MaterialDialog::handleScroll(float xoffset, float yoffset) {
-    if (m_animProgress < 0.01f) return false;
-
-    float maxScroll = std::max(0.0f, m_totalContentH - m_contentViewportH);
-    if (maxScroll > 0.0f) {
-        m_targetScrollY -= yoffset * dp(44.0f);
-        m_targetScrollY = std::clamp(m_targetScrollY, 0.0f, maxScroll);
-        requestUIWakeup(0.1);
-    }
-    return true;
-}
-
 void MaterialDialog::render(MaterialShader& renderer, MaterialTheme& theme) {
-    if (m_animProgress < 0.01f) return;
+    if (isGone() || m_animProgress < 0.001f) return;
 
-    float alpha = m_animProgress;
+    float contentAvailableW = m_cardW - dp(24.0f) * 2.0f;
+    if (!m_customView && m_textDirty) {
+        m_textDirty = false;
+        updateWrapLines(renderer, contentAvailableW);
+    }
+
+    float alpha = m_isOpen ? m_animProgress : (m_animProgress * m_animProgress);
+    MaterialTheme dialogTheme = createDialogTheme(theme, alpha);
+
+    // 1. Full‑screen scrim
     M3Color scrim = { 0.0f, 0.0f, 0.0f, 0.32f * alpha };
     renderer.drawM3UI(x, y, width, height, 0.0f, 0.0f, 0.0f, 0.0f, scrim);
 
-    float currentW = m_cardW, currentH = m_cardH, currentX = m_cardX, currentY = m_cardY;
-    float radius = dp(28.0f);
-    float textScale = 1.0f; 
-
-    // Save original button positions for animation
-    std::vector<float> btnBaseX(children.size()), btnBaseY(children.size());
-    for (size_t i = 0; i < children.size(); ++i) {
-        btnBaseX[i] = children[i]->x; 
-        btnBaseY[i] = children[i]->y;
-    }
-
+    // 2. Animation scaling
+    float scale = 1.0f;
     if (m_animStyle == DialogAnimationStyle::Scale) {
-        float scale = (m_animProgress < 1.0f) ? (1.0f - std::pow(1.0f - m_animProgress, 3.0f)) : 1.0f;
-        currentW = m_cardW * scale; 
-        currentH = m_cardH * scale;
-        currentX = m_cardX + (m_cardW - currentW) / 2.0f; 
-        currentY = m_cardY + (m_cardH - currentH) / 2.0f;
-        radius *= scale; 
-        textScale = scale;
-
-        for (size_t i = 0; i < children.size(); ++i) {
-            children[i]->x = currentX + (btnBaseX[i] - m_cardX) * scale;
-            children[i]->y = currentY + (btnBaseY[i] - m_cardY) * scale;
-        }
-    }
-    else if (m_animStyle == DialogAnimationStyle::FadeZoom) {
+        float ease = (m_animProgress < 1.0f) ? (1.0f - std::pow(1.0f - m_animProgress, 3.0f)) : 1.0f;
+        scale = 0.88f + 0.12f * ease;
+    } else if (m_animStyle == DialogAnimationStyle::FadeZoom) {
         float ease = 1.0f - std::pow(1.0f - m_animProgress, 4.0f);
-        float scale = 0.85f + 0.15f * ease; 
-
-        currentW = m_cardW * scale; 
-        currentH = m_cardH * scale;
-        currentX = m_cardX + (m_cardW - currentW) / 2.0f; 
-        currentY = m_cardY + (m_cardH - currentH) / 2.0f;
-        radius *= scale; 
-        textScale = scale;
-
-        for (size_t i = 0; i < children.size(); ++i) {
-            children[i]->x = currentX + (btnBaseX[i] - m_cardX) * scale;
-            children[i]->y = currentY + (btnBaseY[i] - m_cardY) * scale;
-        }
-    }
-    else { // SlideUp
-        float ease = 1.0f - std::pow(1.0f - m_animProgress, 4.0f);
-        float offsetY = dp(24.0f) * (1.0f - ease);
-        currentY = m_cardY + offsetY;
-
-        for (size_t i = 0; i < children.size(); ++i) {
-            children[i]->y += offsetY;
-        }
+        scale = 0.94f + 0.06f * ease;
     }
 
-    M3Color surfaceColor = theme.surfaceContainerHigh; 
-    surfaceColor.a *= alpha;
-    renderer.drawM3UI(currentX, currentY, currentW, currentH, radius, radius, radius, radius, surfaceColor);
+    float currentW = std::round(m_cardW * scale);
+    float currentH = std::round(m_cardH * scale);
+    float currentX = std::round(m_cardX + (m_cardW - currentW) * 0.5f);
+    float currentY = std::round(m_cardY + (m_cardH - currentH) * 0.5f);
+    float radius = dp(28.0f) * scale;
 
-    M3Color titleCol = theme.onSurface; 
-    titleCol.a *= alpha;
-    M3Color bodyCol = theme.onSurfaceVariant; 
-    bodyCol.a *= alpha;
+    // 3. Card background
+    renderer.drawM3UI(currentX, currentY, currentW, currentH, radius, radius, radius, radius, dialogTheme.surface);
 
-    // 1. Render title
-    renderer.drawText(m_title, currentX + dp(24.0f) * textScale, currentY + dp(24.0f) * textScale, dp(22.0f) * textScale, titleCol);
+    // 4. Title
+    float headerH = m_title.empty() ? dp(24.0f) : dp(76.0f);
+    if (!m_title.empty()) {
+        renderer.drawText(m_title, std::round(currentX + dp(24.0f)), std::round(currentY + dp(28.0f)), dp(22.0f), dialogTheme.onSurface);
+    }
 
-    // 2. Render content with scissor clipping
-    float contentTopY = currentY + dp(68.0f) * textScale;
-    float contentAreaH = (m_cardH - dp(68.0f) - dp(56.0f)) * textScale;
-    float contentLeftX = currentX + dp(24.0f) * textScale;
-    float contentRightLimit = currentX + currentW - dp(24.0f) * textScale;
-    float contentAreaW = contentRightLimit - contentLeftX;
+    // 5. Custom view or wrapped text with scissor clipping
+    if (m_customView && m_customView->isVisible()) {
+        float cvX = currentX + dp(24.0f);
+        float cvY = currentY + headerH;
+        m_customView->doLayout(cvX, cvY, contentAvailableW, m_contentViewportH);
 
-    if (contentAreaH > 0.0f && !m_wrappedLines.empty()) {
         GLFWwindow* win = glfwGetCurrentContext();
         int fbW = 0, fbH = 0;
         if (win) glfwGetFramebufferSize(win, &fbW, &fbH);
 
-        int scissorX = static_cast<int>(std::round(contentLeftX));
-        int scissorY = fbH - static_cast<int>(std::round(contentTopY + contentAreaH));
-        int scissorW = static_cast<int>(std::round(contentAreaW));
-        int scissorH = static_cast<int>(std::round(contentAreaH));
+        int scissorX = static_cast<int>(std::round(currentX + dp(8.0f)));
+        int scissorY = fbH - static_cast<int>(std::round(currentY + currentH - dp(8.0f)));
+        int scissorW = static_cast<int>(std::round(currentW - dp(16.0f)));
+        int scissorH = static_cast<int>(std::round(currentH - dp(16.0f)));
 
-        ScissorGuard guard(scissorX, scissorY, scissorW, scissorH);
+        if (scissorW > 0 && scissorH > 0) {
+            ScissorGuard guard(scissorX, scissorY, scissorW, scissorH);
+            m_customView->render(renderer, dialogTheme);
+        }
+    } else if (!m_customView) {
+        float contentTopY = currentY + headerH;
+        float contentLeftX = currentX + dp(24.0f);
 
-        float lineStep = dp(22.0f) * textScale;
-        float bodyFontSize = dp(14.0f) * textScale;
+        if (m_contentViewportH > 0.0f && !m_wrappedLines.empty()) {
+            GLFWwindow* win = glfwGetCurrentContext();
+            int fbW = 0, fbH = 0;
+            if (win) glfwGetFramebufferSize(win, &fbW, &fbH);
 
-        // O(1) viewport virtualization: render only the visible lines
-        int startLine = static_cast<int>(std::floor(m_currentScrollY / dp(22.0f)));
-        int visibleCount = static_cast<int>(std::ceil(m_contentViewportH / dp(22.0f))) + 2;
-        int endLine = std::min(static_cast<int>(m_wrappedLines.size()) - 1, startLine + visibleCount);
+            int scissorX = static_cast<int>(std::round(contentLeftX));
+            int scissorY = fbH - static_cast<int>(std::round(contentTopY + m_contentViewportH));
+            int scissorW = static_cast<int>(std::round(contentAvailableW));
+            int scissorH = static_cast<int>(std::round(m_contentViewportH));
 
-        if (startLine < 0) startLine = 0;
+            ScissorGuard guard(scissorX, scissorY, scissorW, scissorH);
 
-        for (int i = startLine; i <= endLine; ++i) {
-            if (m_wrappedLines[i].empty()) continue;
-            float lineY = contentTopY + i * lineStep - m_currentScrollY * textScale;
-            renderer.drawText(m_wrappedLines[i], contentLeftX, lineY, bodyFontSize, bodyCol);
+            float lineStep = dp(22.0f);
+            float bodyFontSize = dp(14.0f);
+            int startLine = std::max(0, static_cast<int>(std::floor(m_currentScrollY / lineStep)));
+            int visibleCount = static_cast<int>(std::ceil(m_contentViewportH / lineStep)) + 2;
+            int endLine = std::min(static_cast<int>(m_wrappedLines.size()) - 1, startLine + visibleCount);
+
+            for (int i = startLine; i <= endLine; ++i) {
+                if (m_wrappedLines[i].empty()) continue;
+                float lineY = contentTopY + i * lineStep - m_currentScrollY;
+                renderer.drawText(m_wrappedLines[i], std::round(contentLeftX), std::round(lineY), bodyFontSize, dialogTheme.onSurfaceVariant);
+            }
         }
     }
 
-    // 3. Draw Material 3 floating rounded scrollbar
-    float maxScroll = std::max(0.0f, m_totalContentH - m_contentViewportH);
-    if (maxScroll > 0.0f && contentAreaH > 0.0f) {
-        float scrollbarW = dp(4.0f);
-        float trackH = contentAreaH;
-        float thumbH = std::max(dp(28.0f), (m_contentViewportH / m_totalContentH) * trackH);
-        float scrollRatio = (maxScroll > 0.0f) ? (m_currentScrollY / maxScroll) : 0.0f;
-        float thumbY = contentTopY + scrollRatio * (trackH - thumbH);
-        float thumbX = currentX + currentW - dp(10.0f) - scrollbarW;
-        float thumbRadius = scrollbarW * 0.5f;
+    // 6. Bottom action buttons
+    float btnH = dp(40.0f);
+    float btnY = currentY + currentH - dp(24.0f) - btnH;
+    float minBtnW = dp(80.0f);
+    float cancelW = minBtnW, confirmW = minBtnW;
 
-        M3Color thumbColor = m_isThumbDragging ? theme.primary : theme.onSurfaceVariant;
-        thumbColor.a = (m_isThumbDragging ? 0.85f : 0.40f) * alpha;
-        renderer.drawM3UI(thumbX, thumbY, scrollbarW, thumbH, thumbRadius, thumbRadius, thumbRadius, thumbRadius, thumbColor);
+    if (m_btnCancel && !m_btnCancel->getText().empty()) {
+        cancelW = std::max(minBtnW, dp(11.0f) * m_btnCancel->getText().length() + dp(32.0f));
+    }
+    if (m_btnConfirm && !m_btnConfirm->getText().empty()) {
+        confirmW = std::max(minBtnW, dp(11.0f) * m_btnConfirm->getText().length() + dp(32.0f));
     }
 
-    // 4. Render bottom action buttons
-    if (!children.empty()) {
-        ViewGroup::render(renderer, theme);
-        // Restore original button positions (they were temporarily modified for animation)
-        for (size_t i = 0; i < children.size(); ++i) {
-            children[i]->x = btnBaseX[i];
-            children[i]->y = btnBaseY[i];
+    float rightMargin = dp(24.0f);
+    float gap = dp(12.0f);
+
+    if (m_btnCancel && m_btnConfirm) {
+        float confirmX = currentX + currentW - rightMargin - confirmW;
+        float cancelX = confirmX - gap - cancelW;
+        m_btnCancel->doLayout(cancelX, btnY, cancelW, btnH);
+        m_btnConfirm->doLayout(confirmX, btnY, confirmW, btnH);
+    } else if (m_btnConfirm) {
+        float confirmX = currentX + currentW - rightMargin - confirmW;
+        m_btnConfirm->doLayout(confirmX, btnY, confirmW, btnH);
+    } else if (m_btnCancel) {
+        float cancelX = currentX + currentW - rightMargin - cancelW;
+        m_btnCancel->doLayout(cancelX, btnY, cancelW, btnH);
+    }
+
+    if (m_btnCancel && m_btnCancel->isVisible()) {
+        m_btnCancel->setParentAlpha(alpha);
+        m_btnCancel->render(renderer, theme);
+    }
+    if (m_btnConfirm && m_btnConfirm->isVisible()) {
+        m_btnConfirm->setParentAlpha(alpha);
+        m_btnConfirm->render(renderer, theme);
+    }
+}
+
+bool MaterialDialog::handleMouseMove(float mx, float my) {
+    if (isGone() || m_animProgress < 0.1f) return false;
+
+    if (!m_customView) {
+        float maxScroll = std::max(0.0f, m_totalContentH - m_contentViewportH);
+        if (m_isContentDragging && maxScroll > 0.0f) {
+            float deltaY = my - m_dragStartY;
+            m_targetScrollY = std::clamp(m_dragStartScrollY - deltaY, 0.0f, maxScroll);
+            m_currentScrollY = m_targetScrollY;
+            return true;
         }
     }
+
+    ViewGroup::handleMouseMove(mx, my);
+    return true; // Modal full‑screen barrier
+}
+
+bool MaterialDialog::handleMouseButton(int button, int action, float mx, float my) {
+    if (isGone() || m_animProgress < 0.2f || !m_isOpen) return false;
+
+    if (button == GLFW_MOUSE_BUTTON_LEFT) {
+        if (action == GLFW_PRESS) {
+            m_isPressedInsideCard = (mx >= m_cardX && mx <= m_cardX + m_cardW &&
+                                     my >= m_cardY && my <= m_cardY + m_cardH);
+
+            ViewGroup::handleMouseButton(button, action, mx, my);
+            return true;
+        } 
+        else if (action == GLFW_RELEASE) {
+            bool hitChild = ViewGroup::handleMouseButton(button, action, mx, my);
+
+            bool insideCard = (mx >= m_cardX && mx <= m_cardX + m_cardW &&
+                               my >= m_cardY && my <= m_cardY + m_cardH);
+
+            if (!m_isPressedInsideCard && !insideCard && !hitChild) {
+                dismiss();
+            }
+            m_isPressedInsideCard = false;
+            return true;
+        }
+    }
+
+    ViewGroup::handleMouseButton(button, action, mx, my);
+    return true;
+}
+
+bool MaterialDialog::handleScroll(float mx, float my, float ox, float oy) {
+    if (isGone() || m_animProgress < 0.1f) return false;
+
+    if (m_customView) {
+        ViewGroup::handleScroll(mx, my, ox, oy);
+    } else {
+        float maxScroll = std::max(0.0f, m_totalContentH - m_contentViewportH);
+        if (maxScroll > 0.0f) {
+            m_targetScrollY -= oy * dp(44.0f);
+            m_targetScrollY = std::clamp(m_targetScrollY, 0.0f, maxScroll);
+        }
+    }
+    return true;
 }
