@@ -34,144 +34,57 @@ class DrawerExpandableGroup;
 /**
  * @class DrawerItem
  * @brief Interactive navigation item row inside a navigation drawer.
+ * 
+ * Displays an icon and label, supports selection state with highlight,
+ * hover/press state layers, and optional indentation for nested items.
  */
 class DrawerItem : public View {
 private:
-    /**
-     * @brief Display label string for the item.
-     */
-    std::string m_label;
-
-    /**
-     * @brief Icon descriptor rendered on the leading edge.
-     */
-    Icon m_icon;
-
-    /**
-     * @brief Selection state flag of this navigation item.
-     */
-    bool m_selected = false;
-
-    /**
-     * @brief Unique integer identifier for this item.
-     */
-    int m_id = -1;
-
-    /**
-     * @brief Pointer to the parent NavigationDrawer instance.
-     */
-    NavigationDrawer* m_parent = nullptr;
-
-    /**
-     * @brief Nested indentation depth level.
-     */
-    int m_indentLevel = 0;
+    std::string m_label;          /**< Display text. */
+    Icon m_icon;                  /**< Icon (may be empty). */
+    bool m_selected = false;      /**< Whether this item is currently selected. */
+    int m_id = -1;                /**< Unique identifier for callback. */
+    NavigationDrawer* m_parent = nullptr; /**< Parent drawer (for master alpha). */
+    int m_indentLevel = 0;        /**< Indentation depth for nested items. */
 
 public:
     /**
-     * @brief Constructs a DrawerItem instance.
-     * 
-     * @param id Unique item identifier.
-     * @param label Display text label.
-     * @param iconStr Icon identifier string or asset path.
-     * @param parent Pointer to parent drawer instance.
-     * @param indentLevel Hierarchy nesting indentation level.
+     * @brief Constructs a drawer item.
+     * @param id Unique identifier.
+     * @param label Display text.
+     * @param iconStr Icon identifier.
+     * @param parent Parent drawer.
+     * @param indentLevel Indentation depth.
      */
     DrawerItem(int id, const std::string& label, const std::string& iconStr, NavigationDrawer* parent, int indentLevel = 0);
-
-    /**
-     * @brief Virtual destructor for DrawerItem.
-     */
     virtual ~DrawerItem() override = default;
 
-    /**
-     * @brief Gets the unique identifier of the item.
-     * 
-     * @return Integer item ID.
-     */
     int getId() const { return m_id; }
-
-    /**
-     * @brief Sets the selected state of the item.
-     * 
-     * @param selected True to select, false to unselect.
-     * @param instant True to skip transition animations.
-     */
     void setSelected(bool selected, bool instant = false);
-
-    /**
-     * @brief Checks if the item is currently selected.
-     * 
-     * @return True if selected, false otherwise.
-     */
     bool isSelected() const { return m_selected; }
     
-    /**
-     * @brief Gets the preferred layout height in dp.
-     * 
-     * @return Preferred height in dp.
-     */
     float getPreferredHeight() override { return 48.0f; }
-
-    /**
-     * @brief Updates item animation states.
-     * 
-     * @param dt Delta time in seconds.
-     */
     void update(float dt) override;
-
-    /**
-     * @brief Renders the item pill background, icon, label, and state layers.
-     * 
-     * @param renderer Reference to the Material UI shader renderer.
-     * @param theme Reference to the active Material theme tokens.
-     */
     void render(MaterialShader& renderer, MaterialTheme& theme) override;
-
-    /**
-     * @brief Handles click events on this drawer item.
-     */
     void onClick() override;
 };
 
 /**
  * @class DrawerHeader
  * @brief Section category sub-header label within the drawer.
+ * 
+ * Renders a non-interactive title with lower opacity.
  */
 class DrawerHeader : public View {
 private:
-    /**
-     * @brief Header title text.
-     */
     std::string m_title;
-
-    /**
-     * @brief Pointer to parent NavigationDrawer instance.
-     */
     NavigationDrawer* m_parent;
 
 public:
-    /**
-     * @brief Constructs a DrawerHeader instance.
-     * 
-     * @param title Header title text.
-     * @param parent Pointer to parent drawer.
-     */
     explicit DrawerHeader(const std::string& title, NavigationDrawer* parent);
+    virtual ~DrawerHeader() override = default;
 
-    /**
-     * @brief Gets the preferred layout height in dp.
-     * 
-     * @return Preferred height in dp.
-     */
     float getPreferredHeight() override { return 44.0f; }
-
-    /**
-     * @brief Renders the header title text.
-     * 
-     * @param renderer Reference to the Material UI shader renderer.
-     * @param theme Reference to the active Material theme tokens.
-     */
     void render(MaterialShader& renderer, MaterialTheme& theme) override;
 };
 
@@ -181,418 +94,162 @@ public:
  */
 class DrawerDivider : public View {
 private:
-    /**
-     * @brief Pointer to parent NavigationDrawer instance.
-     */
     NavigationDrawer* m_parent;
 
 public:
-    /**
-     * @brief Constructs a DrawerDivider instance.
-     * 
-     * @param parent Pointer to parent drawer.
-     */
     explicit DrawerDivider(NavigationDrawer* parent);
+    virtual ~DrawerDivider() override = default;
 
-    /**
-     * @brief Gets the preferred layout height in dp.
-     * 
-     * @return Preferred height in dp.
-     */
     float getPreferredHeight() override { return 17.0f; }
-
-    /**
-     * @brief Renders the divider separator line.
-     * 
-     * @param renderer Reference to the Material UI shader renderer.
-     * @param theme Reference to the active Material theme tokens.
-     */
     void render(MaterialShader& renderer, MaterialTheme& theme) override;
 };
 
 /**
  * @class DrawerExpandableGroup
  * @brief Expandable collapsible group container supporting nested hierarchies.
+ * 
+ * Contains a header with an icon, title, and an arrow that rotates to indicate
+ * expansion state. Children can be regular items or nested groups. Implements
+ * a viewport-aware staged velocity animation for smooth expansion/collapse.
  */
 class DrawerExpandableGroup : public ViewGroup {
 private:
-    /**
-     * @brief Section group title text.
-     */
     std::string m_title;
-
-    /**
-     * @brief Icon descriptor for the group header.
-     */
     Icon m_icon;
-
-    /**
-     * @brief Indicates whether a valid icon is configured.
-     */
     bool m_hasIcon = false;
-
-    /**
-     * @brief Current expanded status of the group.
-     */
     bool m_isExpanded = true;
     
-    /**
-     * @brief Current interpolated expansion progress value in range [0.0, 1.0].
-     */
-    float m_expandAnim = 1.0f;
+    float m_expandAnim = 1.0f;      /**< Current expansion animation progress [0.0, 1.0]. */
+    float m_startAnim = 1.0f;       /**< Starting value for the current animation cycle. */
+    float m_animProgress = 1.0f;    /**< Normalized time progress within the animation [0.0, 1.0]. */
+    const float ANIM_DURATION = 0.28f; /**< Duration of the expansion animation in seconds. */
 
-    /**
-     * @brief Initial expansion progress value when animation starts.
-     */
-    float m_startAnim = 1.0f;
-
-    /**
-     * @brief Linear timing progression of the expand collapse animation.
-     */
-    float m_animProgress = 1.0f;
-
-    /**
-     * @brief Pointer to the parent NavigationDrawer instance.
-     */
-    NavigationDrawer* m_drawer = nullptr;
-
-    /**
-     * @brief Indentation depth level for recursive hierarchy nesting.
-     */
-    int m_indentLevel = 0;
+    NavigationDrawer* m_drawer = nullptr; /**< Parent drawer (for scissor clipping and master alpha). */
+    int m_indentLevel = 0;          /**< Indentation level for the group header. */
 
 public:
     /**
-     * @brief Constructs a DrawerExpandableGroup instance.
-     * 
-     * @param title Group title label.
-     * @param iconStr Optional icon identifier or asset path.
+     * @brief Constructs an expandable group.
+     * @param title Group header text.
+     * @param iconStr Icon for the header (optional).
      * @param defaultExpanded Initial expansion state.
-     * @param drawer Pointer to the root NavigationDrawer.
-     * @param indentLevel Indentation nesting level.
+     * @param drawer Parent drawer.
+     * @param indentLevel Indentation depth.
      */
     DrawerExpandableGroup(const std::string& title, const std::string& iconStr, bool defaultExpanded, NavigationDrawer* drawer, int indentLevel = 0);
-
-    /**
-     * @brief Virtual destructor for DrawerExpandableGroup.
-     */
     virtual ~DrawerExpandableGroup() override = default;
 
-    /**
-     * @brief Adds a child navigation item into this expandable group.
-     * 
-     * @param id Unique item identifier.
-     * @param label Display text label.
-     * @param iconStr Icon identifier string or asset path.
-     */
+    /** @brief Adds a child item with a unique ID. */
     void addItem(int id, const std::string& label, const std::string& iconStr);
 
-    /**
-     * @brief Adds a nested expandable child sub-group into this group.
-     * 
-     * @param title Sub-group title label.
-     * @param defaultExpanded Initial expansion state for the sub-group.
-     * @param iconStr Optional icon identifier string or asset path.
-     * @return Pointer to the newly created DrawerExpandableGroup instance.
-     */
+    /** @brief Adds a nested expandable group. @return Pointer to the new group. */
     DrawerExpandableGroup* addGroup(const std::string& title, bool defaultExpanded = false, const std::string& iconStr = "");
 
-    /**
-     * @brief Sets the expansion state and begins the transition animation.
-     * 
-     * @param expanded True to expand, false to collapse.
-     */
+    /** @brief Sets expansion state with animation. */
     void setExpanded(bool expanded);
 
-    /**
-     * @brief Toggles between expanded and collapsed states.
-     */
+    /** @brief Toggles expansion state. */
     void toggle() { setExpanded(!m_isExpanded); }
 
-    /**
-     * @brief Checks if the group is currently expanded.
-     * 
-     * @return True if expanded, false if collapsed.
-     */
+    /** @brief Returns current expansion state. */
     bool isExpanded() const { return m_isExpanded; }
 
-    /**
-     * @brief Gets current animated expansion factor in range [0.0, 1.0].
-     * 
-     * @return Interpolated expansion animation value.
-     */
+    /** @brief Returns current animation progress [0.0, 1.0]. */
     float getExpandAnim() const { return m_expandAnim; }
 
-    /**
-     * @brief Computes dynamic preferred layout height based on expansion animation.
-     * 
-     * @return Preferred height in dp.
-     */
     float getPreferredHeight() override;
-
-    /**
-     * @brief Updates animation interpolation state.
-     * 
-     * @param dt Delta time in seconds.
-     */
     void update(float dt) override;
-
-    /**
-     * @brief Resolves layout bounds for group header and child elements.
-     * 
-     * @param parentX Parent origin X coordinate in pixels.
-     * @param parentY Parent origin Y coordinate in pixels.
-     * @param parentW Parent allocated width in pixels.
-     * @param parentH Parent allocated height in pixels.
-     */
     void doLayout(float parentX, float parentY, float parentW, float parentH) override;
-
-    /**
-     * @brief Renders the group header, rotation arrow, and clipped child views.
-     * 
-     * @param renderer Reference to the Material UI shader renderer.
-     * @param theme Reference to the active Material theme tokens.
-     */
     void render(MaterialShader& renderer, MaterialTheme& theme) override;
 
-    /**
-     * @brief Handles mouse movement events for hover interactions.
-     * 
-     * @param mx Mouse X coordinate.
-     * @param my Mouse Y coordinate.
-     * @return True if cursor is inside this group bounds.
-     */
     bool handleMouseMove(float mx, float my) override;
-
-    /**
-     * @brief Handles mouse click actions on header and expanded children.
-     * 
-     * @param button Mouse button index.
-     * @param action Action type.
-     * @param mx Mouse X coordinate.
-     * @param my Mouse Y coordinate.
-     * @return True if the event was consumed.
-     */
     bool handleMouseButton(int button, int action, float mx, float my) override;
 };
 
 /**
  * @class NavigationDrawer
  * @brief Modal sliding drawer container conforming to Material Design 3 guidelines.
+ * 
+ * Manages a panel that slides in from the left (or right) edge. Supports
+ * scrollable content, kinetic scrolling, item selection, and expandable
+ * sections. Implements a scrim overlay and exclusive modal behavior.
  */
 class NavigationDrawer : public ViewGroup {
 private:
-    /**
-     * @brief Drawer open state flag.
-     */
-    bool m_isOpen = false;
+    bool m_isOpen = false;                      /**< Whether the drawer is open (target state). */
+    float m_slideAnim = 0.0f;                   /**< Slide animation progress [0.0, 1.0]. */
+    float m_panelWidthBase = 360.0f;            /**< Base panel width in dp (clamped to screen). */
+    int m_selectedIndex = -1;                   /**< ID of the currently selected item. */
+    std::function<void(int)> m_onItemSelectedCallback; /**< Selection callback. */
+    DrawerAnimStyle m_animStyle = DrawerAnimStyle::Slide; /**< Animation style. */
 
-    /**
-     * @brief Current slide animation progress in range [0.0, 1.0].
-     */
-    float m_slideAnim = 0.0f;
-
-    /**
-     * @brief Standard baseline panel width in dp.
-     */
-    float m_panelWidthBase = 360.0f;
-
-    /**
-     * @brief Currently selected navigation item identifier.
-     */
-    int m_selectedIndex = -1;
-
-    /**
-     * @brief Callback handler triggered upon selecting a navigation item.
-     */
-    std::function<void(int)> m_onItemSelectedCallback;
-
-    /**
-     * @brief Configured panel sliding animation style.
-     */
-    DrawerAnimStyle m_animStyle = DrawerAnimStyle::Slide;
-
-    /**
-     * @brief Current vertical content scroll position in physical pixels.
-     */
-    float m_scrollY = 0.0f;
-
-    /**
-     * @brief Target smooth vertical content scroll position in physical pixels.
-     */
-    float m_targetScrollY = 0.0f;
-
-    /**
-     * @brief Maximum scrollable vertical offset in physical pixels.
-     */
-    float m_maxScrollY = 0.0f;
+    float m_scrollY = 0.0f;                     /**< Current scroll offset (pixels). */
+    float m_targetScrollY = 0.0f;               /**< Target scroll offset (smoothly interpolated). */
+    float m_maxScrollY = 0.0f;                  /**< Maximum allowable scroll offset. */
 
 public:
-    /**
-     * @brief Constructs a NavigationDrawer instance.
-     */
     NavigationDrawer();
-
-    /**
-     * @brief Virtual destructor for NavigationDrawer.
-     */
     virtual ~NavigationDrawer() override = default;
 
-    /**
-     * @brief Opens the navigation drawer with smooth slide animation.
-     */
+    /** @brief Opens the drawer with animation. */
     void open();
 
-    /**
-     * @brief Closes the navigation drawer with smooth slide animation.
-     */
+    /** @brief Closes the drawer with animation. */
     void close();
 
-    /**
-     * @brief Toggles between open and closed states.
-     */
+    /** @brief Toggles the drawer open/close state. */
     void toggle();
 
-    /**
-     * @brief Checks if the drawer is opened.
-     * 
-     * @return True if open, false otherwise.
-     */
+    /** @brief Returns current open/close target state. */
     bool isOpen() const { return m_isOpen; }
 
-    /**
-     * @brief Gets current slide animation factor in range [0.0, 1.0].
-     * 
-     * @return Current animation value.
-     */
+    /** @brief Returns current slide animation progress [0.0, 1.0]. */
     float getSlideAnim() const { return m_slideAnim; }
 
     /**
-     * @brief Calculates master alpha value depending on animation style.
-     * 
-     * @return Master opacity factor in range [0.0, 1.0].
+     * @brief Returns the master alpha for child elements (used in SharedAxis style).
+     * @return Alpha value [0.0, 1.0].
      */
     float getMasterAlpha() const;
 
-    /**
-     * @brief Sets the panel animation style.
-     * 
-     * @param style Transition style variant.
-     */
+    /** @brief Sets the animation style. */
     void setAnimationStyle(DrawerAnimStyle style) { m_animStyle = style; }
 
-    /**
-     * @brief Gets the current animation style.
-     * 
-     * @return Transition style variant.
-     */
+    /** @brief Returns the current animation style. */
     DrawerAnimStyle getAnimationStyle() const { return m_animStyle; }
 
-    /**
-     * @brief Appends a navigation item row at top level.
-     * 
-     * @param id Unique item identifier.
-     * @param label Display text label.
-     * @param iconStr Icon resource identifier or asset path.
-     */
+    /** @brief Adds a top-level drawer item. */
     void addItem(int id, const std::string& label, const std::string& iconStr);
 
-    /**
-     * @brief Appends a category section header.
-     * 
-     * @param title Header title text.
-     */
+    /** @brief Adds a non-interactive header label. */
     void addHeader(const std::string& title);
 
-    /**
-     * @brief Appends a visual divider separator line.
-     */
+    /** @brief Adds a divider line. */
     void addDivider();
 
     /**
-     * @brief Appends an expandable collapsible group section.
-     * 
-     * @param title Group title label.
+     * @brief Adds an expandable group at the top level.
+     * @param title Group title.
      * @param defaultExpanded Initial expansion state.
-     * @param iconStr Optional icon resource identifier or asset path.
-     * @return Pointer to the created DrawerExpandableGroup instance.
+     * @param iconStr Optional header icon.
+     * @return Pointer to the created group.
      */
     DrawerExpandableGroup* addGroup(const std::string& title, bool defaultExpanded = true, const std::string& iconStr = "");
 
-    /**
-     * @brief Sets the selected item ID and updates all child visual states.
-     * 
-     * @param id Unique item identifier.
-     */
+    /** @brief Sets the selected item by ID (updates UI and callback). */
     void setSelectedIndex(int id);
 
-    /**
-     * @brief Registers the item selection callback listener.
-     * 
-     * @param callback Callback receiving the selected item ID.
-     */
+    /** @brief Registers a selection callback. */
     void setOnItemSelected(std::function<void(int)> callback);
 
-    /**
-     * @brief Handles item selection event and automatically closes the drawer.
-     * 
-     * @param id Selected item identifier.
-     */
+    /** @brief Internal handler called when an item is clicked. */
     void onItemClicked(int id);
 
-    /**
-     * @brief Updates slide and scroll animation mechanics.
-     * 
-     * @param dt Delta time in seconds.
-     */
     void update(float dt) override;
-
-    /**
-     * @brief Resolves panel translation and children layout metrics.
-     * 
-     * @param parentX Parent origin X coordinate in pixels.
-     * @param parentY Parent origin Y coordinate in pixels.
-     * @param parentW Parent allocated width in pixels.
-     * @param parentH Parent allocated height in pixels.
-     */
     void doLayout(float parentX, float parentY, float parentW, float parentH) override;
-
-    /**
-     * @brief Renders the modal background scrim, drawer surface, and clipped contents.
-     * 
-     * @param renderer Reference to the Material UI shader renderer.
-     * @param theme Reference to the active Material theme tokens.
-     */
     void render(MaterialShader& renderer, MaterialTheme& theme) override;
 
-    /**
-     * @brief Handles mouse hover events.
-     * 
-     * @param mx Mouse X coordinate.
-     * @param my Mouse Y coordinate.
-     * @return True if event is consumed.
-     */
     bool handleMouseMove(float mx, float my) override;
-
-    /**
-     * @brief Handles mouse click events on scrim backdrop or content elements.
-     * 
-     * @param button Mouse button index.
-     * @param action Action type.
-     * @param mx Mouse X coordinate.
-     * @param my Mouse Y coordinate.
-     * @return True if event is consumed.
-     */
     bool handleMouseButton(int button, int action, float mx, float my) override;
-
-    /**
-     * @brief Handles kinetic mouse wheel scrolling.
-     * 
-     * @param mx Mouse X coordinate.
-     * @param my Mouse Y coordinate.
-     * @param ox Horizontal scroll offset.
-     * @param oy Vertical scroll offset.
-     * @return True if scrolling was consumed.
-     */
     bool handleScroll(float mx, float my, float ox, float oy) override;
 };
