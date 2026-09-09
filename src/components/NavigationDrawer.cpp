@@ -1,8 +1,10 @@
 /**
  * @file NavigationDrawer.cpp
- * @brief Implementation of sliding modal panel with expandable/collapsible navigation sections.
+ * @brief High-performance Material Design 3 Navigation Drawer with Viewport-Staged Velocity Animation.
  * 
- * Part of the Material 3 OpenGL ES Component Library.
+ * Implements a modal navigation drawer with expandable groups, kinetic scrolling,
+ * and a viewport-aware staged velocity algorithm for smooth expansion of large
+ * groups. Uses scissor clipping and viewport culling for optimal rendering performance.
  * 
  * @author Vectorted
  * @repository github.com/Vectorted
@@ -14,89 +16,27 @@
 #include <algorithm>
 #include <cmath>
 #include <glad/glad.h>
+#include <GLFW/glfw3.h>
 
 extern void requestUIWakeup(double seconds);
 
-/**
- * @brief Calculates intersection with existing OpenGL scissor box and applies scissor clipping.
- * 
- * @param x Desired scissor left coordinate in window pixels.
- * @param y Desired scissor bottom coordinate in window pixels.
- * @param w Desired scissor width in window pixels.
- * @param h Desired scissor height in window pixels.
- * @param prevScissor Existing 4-element scissor rectangle array.
- * @param scissorEnabled Flag indicating whether scissor test was previously active.
- */
-static void setIntersectedScissor(int x, int y, int w, int h, const GLint prevScissor[4], GLboolean scissorEnabled) {
-    if (!scissorEnabled) {
-        glEnable(GL_SCISSOR_TEST);
-        glScissor(x, y, std::max(0, w), std::max(0, h));
-        return;
-    }
-
-    int px = prevScissor[0];
-    int py = prevScissor[1];
-    int pw = prevScissor[2];
-    int ph = prevScissor[3];
-
-    int nx = std::max(x, px);
-    int ny = std::max(y, py);
-    int nr = std::min(x + w, px + pw);
-    int nt = std::min(y + h, py + ph);
-
-    int nw = std::max(0, nr - nx);
-    int nh = std::max(0, nt - ny);
-
-    glEnable(GL_SCISSOR_TEST);
-    glScissor(nx, ny, nw, nh);
-}
-
-/**
- * @brief Constructs a DrawerItem instance.
- * 
- * @param id Unique item identifier.
- * @param label Display text label.
- * @param iconStr Icon identifier string or asset path.
- * @param parent Pointer to parent drawer instance.
- * @param indentLevel Hierarchy nesting indentation level.
- */
 DrawerItem::DrawerItem(int id, const std::string& label, const std::string& iconStr, NavigationDrawer* parent, int indentLevel)
     : m_id(id), m_label(label), m_icon(iconFromString(iconStr)), m_parent(parent), m_indentLevel(indentLevel) {
     layout_width = MATCH_PARENT;
 }
 
-/**
- * @brief Sets selection state for this item.
- * 
- * @param selected True to select, false otherwise.
- * @param instant True to skip animations.
- */
 void DrawerItem::setSelected(bool selected, bool instant) { 
     m_selected = selected; 
 }
 
-/**
- * @brief Updates item state transitions.
- * 
- * @param dt Delta time in seconds.
- */
 void DrawerItem::update(float dt) { 
     View::update(dt); 
 }
 
-/**
- * @brief Invokes item selection on parent drawer when clicked.
- */
 void DrawerItem::onClick() { 
     if (m_parent) m_parent->onItemClicked(m_id); 
 }
 
-/**
- * @brief Renders the item background pill, state overlays, leading icon, and text.
- * 
- * @param renderer Reference to the Material UI shader renderer.
- * @param theme Reference to the active Material theme tokens.
- */
 void DrawerItem::render(MaterialShader& renderer, MaterialTheme& theme) {
     float masterAlpha = m_parent ? m_parent->getMasterAlpha() : 1.0f;
 
@@ -113,21 +53,23 @@ void DrawerItem::render(MaterialShader& renderer, MaterialTheme& theme) {
     float radius = pillH * 0.5f;
 
     float centerY = pillY + pillH * 0.5f;
-
     float stateLayerAlpha = hoverAnim * 0.08f + pressAnim * 0.12f;
     
+    // Selected background
     if (m_selected) {
         M3Color activeBg = theme.secondaryContainer; 
         activeBg.a *= masterAlpha;
         renderer.drawM3UI(pillX, pillY, pillW, pillH, radius, radius, radius, radius, activeBg);
     }
     
+    // Hover/press state layer
     if (stateLayerAlpha > 0.001f) {
         M3Color hoverColor = m_selected ? theme.onSecondaryContainer : theme.onSurfaceVariant;
         hoverColor.a = stateLayerAlpha * masterAlpha;
         renderer.drawM3UI(pillX, pillY, pillW, pillH, radius, radius, radius, radius, hoverColor);
     }
 
+    // Icon
     float iconSize = std::floor(dp(22.0f) * 0.5f) * 2.0f; 
     float iconY = centerY - iconSize * 0.5f;
     float iconX = std::round(pillX + dp(14.0f));
@@ -139,6 +81,7 @@ void DrawerItem::render(MaterialShader& renderer, MaterialTheme& theme) {
         renderer.drawIcon(iconX, iconY, iconSize, m_icon, contentColor); 
     }
     
+    // Text label
     float textX = std::round(iconX + iconSize + dp(10.0f)); 
     float textSize = dp(14.0f);
     float textDrawY = std::round(centerY - textSize * 0.5f);
@@ -146,23 +89,11 @@ void DrawerItem::render(MaterialShader& renderer, MaterialTheme& theme) {
     renderer.drawText(m_label, textX, textDrawY, textSize, contentColor);
 }
 
-/**
- * @brief Constructs a DrawerHeader instance.
- * 
- * @param title Header title string.
- * @param parent Pointer to parent drawer instance.
- */
 DrawerHeader::DrawerHeader(const std::string& title, NavigationDrawer* parent) 
     : m_title(title), m_parent(parent) { 
     layout_width = MATCH_PARENT; 
 }
 
-/**
- * @brief Renders the section header text.
- * 
- * @param renderer Reference to the Material UI shader renderer.
- * @param theme Reference to the active Material theme tokens.
- */
 void DrawerHeader::render(MaterialShader& renderer, MaterialTheme& theme) {
     float masterAlpha = m_parent ? m_parent->getMasterAlpha() : 1.0f;
     M3Color color = theme.onSurfaceVariant;  
@@ -175,21 +106,10 @@ void DrawerHeader::render(MaterialShader& renderer, MaterialTheme& theme) {
     renderer.drawText(m_title, textX, textY, textSize, color);
 }
 
-/**
- * @brief Constructs a DrawerDivider instance.
- * 
- * @param parent Pointer to parent drawer instance.
- */
 DrawerDivider::DrawerDivider(NavigationDrawer* parent) : m_parent(parent) {
     layout_width = MATCH_PARENT;
 }
 
-/**
- * @brief Renders the horizontal separator line.
- * 
- * @param renderer Reference to the Material UI shader renderer.
- * @param theme Reference to the active Material theme tokens.
- */
 void DrawerDivider::render(MaterialShader& renderer, MaterialTheme& theme) {
     float masterAlpha = m_parent ? m_parent->getMasterAlpha() : 1.0f;
     M3Color color = theme.outlineVariant; 
@@ -199,15 +119,6 @@ void DrawerDivider::render(MaterialShader& renderer, MaterialTheme& theme) {
     renderer.drawM3UI(std::round(x + padding), centerY, std::round(width - padding * 2.0f), std::round(dp(1.0f)), 0.0f, 0.0f, 0.0f, 0.0f, color);
 }
 
-/**
- * @brief Constructs a DrawerExpandableGroup instance.
- * 
- * @param title Group title label.
- * @param iconStr Optional icon resource identifier or asset path.
- * @param defaultExpanded Initial expansion state.
- * @param drawer Pointer to the root NavigationDrawer.
- * @param indentLevel Indentation nesting level.
- */
 DrawerExpandableGroup::DrawerExpandableGroup(const std::string& title, const std::string& iconStr, bool defaultExpanded, NavigationDrawer* drawer, int indentLevel)
     : m_title(title),
       m_isExpanded(defaultExpanded),
@@ -223,100 +134,103 @@ DrawerExpandableGroup::DrawerExpandableGroup(const std::string& title, const std
     }
 }
 
-/**
- * @brief Adds a child navigation item into this group.
- * 
- * @param id Unique item identifier.
- * @param label Display text label.
- * @param iconStr Icon identifier string or asset path.
- */
 void DrawerExpandableGroup::addItem(int id, const std::string& label, const std::string& iconStr) {
     addView(new DrawerItem(id, label, iconStr, m_drawer, m_indentLevel + 1));
 }
 
-/**
- * @brief Adds a nested expandable child sub-group into this group.
- * 
- * @param title Sub-group title label.
- * @param defaultExpanded Initial expansion state for the sub-group.
- * @param iconStr Optional icon identifier string or asset path.
- * @return Pointer to the newly created DrawerExpandableGroup instance.
- */
 DrawerExpandableGroup* DrawerExpandableGroup::addGroup(const std::string& title, bool defaultExpanded, const std::string& iconStr) {
     auto* subGroup = new DrawerExpandableGroup(title, iconStr, defaultExpanded, m_drawer, m_indentLevel + 1);
     addView(subGroup);
     return subGroup;
 }
 
-/**
- * @brief Sets the expansion state and initiates animation progression.
- * 
- * @param expanded True to expand, false to collapse.
- */
 void DrawerExpandableGroup::setExpanded(bool expanded) {
     if (m_isExpanded == expanded) return;
     m_isExpanded = expanded;
     
     m_startAnim = m_expandAnim;
     m_animProgress = 0.0f;
-    requestUIWakeup(0.35);
+    requestUIWakeup(ANIM_DURATION + 0.05);
 }
 
-/**
- * @brief Computes preferred height dynamically depending on child heights and expansion factor.
- * 
- * @return Preferred height in dp.
- */
 float DrawerExpandableGroup::getPreferredHeight() {
     float headerH = 48.0f;
+    if (m_expandAnim <= 0.0001f) {
+        return headerH;
+    }
+
     float childrenH = 0.0f;
     for (View* child : children) {
         childrenH += child->getPreferredHeight();
     }
-    return headerH + childrenH * m_expandAnim;
+
+    // Compute visible area within the drawer's viewport
+    float visibleV = childrenH;
+    if (m_drawer) {
+        float drawerBottom = m_drawer->y + m_drawer->height;
+        float headerBottom = y + headerH;
+        float availableH = std::max(0.0f, drawerBottom - headerBottom);
+        float availableDp = availableH / (dp(1.0f) > 0.0f ? dp(1.0f) : 1.0f);
+        visibleV = std::clamp(availableDp, 48.0f, childrenH);
+    }
+
+    float p = m_expandAnim; // 0.0 -> 1.0
+
+    // Case 1: children fit entirely within viewport — smooth uniform acceleration
+    if (childrenH <= visibleV + 1.0f) {
+        float uCurve = 0.85f * p + 0.15f * (p * p);
+        return headerH + childrenH * uCurve;
+    }
+
+    // Case 2: children exceed viewport — staged velocity algorithm
+    // First 82% of time expands the visible portion (linear+small acceleration),
+    // remaining 18% uses rapid quadratic sprint to finish.
+    const float SPLIT = 0.82f;
+    float currentChildrenH = 0.0f;
+
+    if (p <= SPLIT) {
+        float u = p / SPLIT;
+        float uCurve = 0.85f * u + 0.15f * (u * u);
+        currentChildrenH = visibleV * uCurve;
+    } else {
+        float w = (p - SPLIT) / (1.0f - SPLIT);
+        float wCurve = w * w;
+        currentChildrenH = visibleV + (childrenH - visibleV) * wCurve;
+    }
+
+    return headerH + currentChildrenH;
 }
 
-/**
- * @brief Updates expansion cubic easing interpolation.
- * 
- * @param dt Delta time in seconds.
- */
 void DrawerExpandableGroup::update(float dt) {
-    ViewGroup::update(dt);
+    if (m_expandAnim > 0.001f) {
+        ViewGroup::update(dt);
+    } else {
+        View::update(dt);
+    }
 
     if (m_animProgress < 1.0f) {
         float dtSafe = std::min(dt, 0.033f);
-        const float DURATION = 0.28f;
-
-        m_animProgress += dtSafe / DURATION;
+        m_animProgress += dtSafe / ANIM_DURATION;
         
         if (m_animProgress >= 1.0f) {
             m_animProgress = 1.0f;
             m_expandAnim = m_isExpanded ? 1.0f : 0.0f;
         } else {
-            float t = m_animProgress;
-            float ease = 1.0f - std::pow(1.0f - t, 3.0f);
             float target = m_isExpanded ? 1.0f : 0.0f;
-            
-            m_expandAnim = m_startAnim + (target - m_startAnim) * ease;
-            requestUIWakeup(0.05);
+            // Linear progress; getPreferredHeight() applies the staged velocity curve
+            m_expandAnim = m_startAnim + (target - m_startAnim) * m_animProgress;
+            requestUIWakeup(0.016);
         }
     }
 }
 
-/**
- * @brief Resolves layout bounds for group header and child items.
- * 
- * @param parentX Parent origin X coordinate in pixels.
- * @param parentY Parent origin Y coordinate in pixels.
- * @param parentW Parent allocated width in pixels.
- * @param parentH Parent allocated height in pixels.
- */
 void DrawerExpandableGroup::doLayout(float parentX, float parentY, float parentW, float parentH) {
     x = std::round(parentX);
     y = std::round(parentY);
     width = std::round(parentW);
     height = std::round(parentH);
+
+    if (m_expandAnim <= 0.0001f) return;
 
     float headerH = std::round(dp(48.0f));
     float curY = y + headerH;
@@ -328,30 +242,19 @@ void DrawerExpandableGroup::doLayout(float parentX, float parentY, float parentW
     }
 }
 
-/**
- * @brief Handles mouse movement events.
- * 
- * @param mx Mouse X coordinate.
- * @param my Mouse Y coordinate.
- * @return True if the mouse cursor is inside the bounds.
- */
 bool DrawerExpandableGroup::handleMouseMove(float mx, float my) {
     bool inside = isInside(mx, my);
     if (m_expandAnim > 0.05f) {
+        if (m_drawer && (my < m_drawer->y || my > m_drawer->y + m_drawer->height)) {
+            return inside;
+        }
         ViewGroup::handleMouseMove(mx, my);
+    } else {
+        View::handleMouseMove(mx, my);
     }
     return inside;
 }
 
-/**
- * @brief Handles mouse button events on header or children.
- * 
- * @param button Mouse button index.
- * @param action Action type.
- * @param mx Mouse X coordinate.
- * @param my Mouse Y coordinate.
- * @return True if event was consumed.
- */
 bool DrawerExpandableGroup::handleMouseButton(int button, int action, float mx, float my) {
     if (button == 0) {
         float headerH = std::round(dp(48.0f));
@@ -363,18 +266,15 @@ bool DrawerExpandableGroup::handleMouseButton(int button, int action, float mx, 
         }
 
         if (m_expandAnim > 0.05f && my > y + headerH && my <= y + height) {
+            if (m_drawer && (my < m_drawer->y || my > m_drawer->y + m_drawer->height)) {
+                return false;
+            }
             return ViewGroup::handleMouseButton(button, action, mx, my);
         }
     }
     return false;
 }
 
-/**
- * @brief Renders the group header, rotation chevron, and scissor-clipped children.
- * 
- * @param renderer Reference to the Material UI shader renderer.
- * @param theme Reference to the active Material theme tokens.
- */
 void DrawerExpandableGroup::render(MaterialShader& renderer, MaterialTheme& theme) {
     float masterAlpha = m_drawer ? m_drawer->getMasterAlpha() : 1.0f;
     float headerH = std::round(dp(48.0f));
@@ -390,15 +290,16 @@ void DrawerExpandableGroup::render(MaterialShader& renderer, MaterialTheme& them
     float rawPillH = headerH - marginY * 2.0f;
     float pillH = std::floor(rawPillH * 0.5f) * 2.0f;
     float radius = std::round(dp(12.0f));
-
     float centerY = pillY + pillH * 0.5f;
 
+    // 1. Header hover background
     if (hoverAnim > 0.01f) {
         M3Color hoverBg = theme.onSurfaceVariant;
         hoverBg.a = hoverAnim * 0.06f * masterAlpha;
         renderer.drawM3UI(pillX, pillY, pillW, pillH, radius, radius, radius, radius, hoverBg);
     }
 
+    // 2. Header icon
     float contentX = std::round(pillX + dp(14.0f));
     if (m_hasIcon) {
         float iconSize = std::floor(dp(20.0f) * 0.5f) * 2.0f;
@@ -408,13 +309,14 @@ void DrawerExpandableGroup::render(MaterialShader& renderer, MaterialTheme& them
         contentX += iconSize + std::round(dp(10.0f));
     }
 
+    // 3. Header title
     M3Color titleColor = theme.onSurface;
     titleColor.a *= (0.85f * masterAlpha);
-    
     float textSize = dp(14.0f);
     float textY = std::round(centerY - textSize * 0.5f);
     renderer.drawText(m_title, contentX, textY, textSize, titleColor);
 
+    // 4. Rotating arrow indicator
     float arrowSize = std::floor(dp(18.0f) * 0.5f) * 2.0f;
     float arrowX = std::round(pillX + pillW - arrowSize - dp(12.0f));
     float arrowY = centerY - arrowSize * 0.5f;
@@ -428,72 +330,60 @@ void DrawerExpandableGroup::render(MaterialShader& renderer, MaterialTheme& them
     arrowColor.a *= (0.7f * masterAlpha);
     renderer.drawIcon(arrowX, arrowY, arrowSize, arrowIcon, arrowColor, 0.0f, rotAngle, rotCx, rotCy);
 
-    float clipTop = y + headerH;
-    float clipH = std::max(0.0f, height - headerH);
+    // 5. Child rendering with scissor clipping and viewport culling
+    float groupContentH = height - headerH;
+    if (m_expandAnim > 0.001f && groupContentH > 0.5f) {
+        GLFWwindow* win = glfwGetCurrentContext();
+        int fbW = 0, fbH = 0;
+        if (win) glfwGetFramebufferSize(win, &fbW, &fbH);
 
-    if (m_expandAnim > 0.005f && clipH >= 1.0f) {
-        GLint viewport[4];
-        glGetIntegerv(GL_VIEWPORT, viewport);
-        GLint winHeight = viewport[3];
+        float groupClipTop = y + headerH;
+        float groupClipBottom = y + height;
 
-        GLint prevScissor[4];
-        GLboolean prevScissorEnabled = glIsEnabled(GL_SCISSOR_TEST);
-        if (prevScissorEnabled) {
-            glGetIntegerv(GL_SCISSOR_BOX, prevScissor);
-        }
+        float drawerTop = m_drawer ? m_drawer->y : 0.0f;
+        float drawerBottom = m_drawer ? (m_drawer->y + m_drawer->height) : (float)fbH;
 
-        setIntersectedScissor(
-            (int)std::round(x), 
-            (int)std::round(winHeight - clipTop - clipH), 
-            (int)std::round(width), 
-            (int)std::round(clipH), 
-            prevScissor, 
-            prevScissorEnabled
-        );
+        float effectiveTop = std::max(groupClipTop, drawerTop);
+        float effectiveBottom = std::min(groupClipBottom, drawerBottom);
 
-        for (View* child : children) {
-            child->render(renderer, theme);
-        }
+        if (effectiveTop < effectiveBottom && fbH > 0) {
+            int scissorX = (int)std::max(0.0f, x);
+            int scissorY = (int)std::round((float)fbH - effectiveBottom);
+            int scissorW = (int)std::round(width);
+            int scissorH = (int)std::round(effectiveBottom - effectiveTop);
 
-        if (prevScissorEnabled) {
-            glEnable(GL_SCISSOR_TEST);
-            glScissor(prevScissor[0], prevScissor[1], prevScissor[2], prevScissor[3]);
-        } else {
-            glDisable(GL_SCISSOR_TEST);
+            glScissor(scissorX, scissorY, std::max(0, scissorW), std::max(0, scissorH));
+
+            for (View* child : children) {
+                if (child->y + child->height <= effectiveTop || child->y >= effectiveBottom) {
+                    continue;
+                }
+                child->render(renderer, theme);
+            }
+
+            // Restore the main drawer scissor (will be re-applied by the drawer itself)
+            if (m_drawer) {
+                int mainScissorY = (int)std::round((float)fbH - (m_drawer->y + m_drawer->height));
+                glScissor(
+                    (int)std::max(0.0f, m_drawer->x),
+                    mainScissorY,
+                    (int)std::round(m_drawer->width),
+                    (int)std::round(m_drawer->height)
+                );
+            }
         }
     }
 }
 
-/**
- * @brief Constructs a NavigationDrawer instance.
- */
 NavigationDrawer::NavigationDrawer() { 
     layout_width = MATCH_PARENT; 
     layout_height = MATCH_PARENT; 
 }
 
-/**
- * @brief Opens the drawer with slide animation.
- */
-void NavigationDrawer::open() { m_isOpen = true; requestUIWakeup(0.5); }
+void NavigationDrawer::open() { m_isOpen = true; requestUIWakeup(0.35); }
+void NavigationDrawer::close() { m_isOpen = false; requestUIWakeup(0.35); }
+void NavigationDrawer::toggle() { m_isOpen = !m_isOpen; requestUIWakeup(0.35); }
 
-/**
- * @brief Closes the drawer with slide animation.
- */
-void NavigationDrawer::close() { m_isOpen = false; requestUIWakeup(0.5); }
-
-/**
- * @brief Toggles the drawer open state.
- */
-void NavigationDrawer::toggle() { m_isOpen = !m_isOpen; requestUIWakeup(0.5); }
-
-/**
- * @brief Appends a top-level navigation item.
- * 
- * @param id Unique item identifier.
- * @param label Display text label.
- * @param iconStr Icon resource identifier or asset path.
- */
 void NavigationDrawer::addItem(int id, const std::string& label, const std::string& iconStr) {
     DrawerItem* item = new DrawerItem(id, label, iconStr, this, 0);
     if (children.empty()) { 
@@ -503,51 +393,24 @@ void NavigationDrawer::addItem(int id, const std::string& label, const std::stri
     addView(item);
 }
 
-/**
- * @brief Appends a category section header.
- * 
- * @param title Header title text.
- */
 void NavigationDrawer::addHeader(const std::string& title) { 
     addView(new DrawerHeader(title, this)); 
 }
 
-/**
- * @brief Appends a visual horizontal divider separator.
- */
 void NavigationDrawer::addDivider() { 
     addView(new DrawerDivider(this)); 
 }
 
-/**
- * @brief Appends an expandable collapsible group.
- * 
- * @param title Group title label.
- * @param defaultExpanded Initial expansion state.
- * @param iconStr Optional icon identifier string or asset path.
- * @return Pointer to created DrawerExpandableGroup instance.
- */
 DrawerExpandableGroup* NavigationDrawer::addGroup(const std::string& title, bool defaultExpanded, const std::string& iconStr) {
     auto* group = new DrawerExpandableGroup(title, iconStr, defaultExpanded, this, 0);
     addView(group);
     return group;
 }
 
-/**
- * @brief Sets callback handler for item selection events.
- * 
- * @param callback Callback receiving selected item ID.
- */
 void NavigationDrawer::setOnItemSelected(std::function<void(int)> callback) { 
     m_onItemSelectedCallback = std::move(callback); 
 }
 
-/**
- * @brief Recursively traverses view hierarchy to update selection flags.
- * 
- * @param views Vector of child view pointers.
- * @param targetId Target item identifier to be selected.
- */
 static void updateDrawerSelection(const std::vector<View*>& views, int targetId) {
     for (View* v : views) {
         if (auto* item = dynamic_cast<DrawerItem*>(v)) {
@@ -558,45 +421,26 @@ static void updateDrawerSelection(const std::vector<View*>& views, int targetId)
     }
 }
 
-/**
- * @brief Updates selected item index and refreshes hierarchy state.
- * 
- * @param id Selected item identifier.
- */
 void NavigationDrawer::setSelectedIndex(int id) {
     if (m_selectedIndex == id) return;
-
     updateDrawerSelection(children, id);
     m_selectedIndex = id;
     if (m_onItemSelectedCallback) m_onItemSelectedCallback(id);
 }
 
-/**
- * @brief Handles item selection event and automatically closes the drawer.
- * 
- * @param id Selected item identifier.
- */
 void NavigationDrawer::onItemClicked(int id) { 
     setSelectedIndex(id); 
     close(); 
 }
 
-/**
- * @brief Calculates overall master alpha for current animation frame.
- * 
- * @return Opacity factor in range [0.0, 1.0].
- */
 float NavigationDrawer::getMasterAlpha() const {
     if (m_animStyle == DrawerAnimStyle::SharedAxis) return std::pow(m_slideAnim, 2.0f);
     return 1.0f;
 }
 
-/**
- * @brief Updates panel slide progression and kinetic scroll smoothing.
- * 
- * @param dt Delta time in seconds.
- */
 void NavigationDrawer::update(float dt) {
+    if (m_slideAnim <= 0.001f && !m_isOpen) return;
+
     ViewGroup::update(dt);
     float dtSafe = std::min(dt, 0.033f);
     float animSpeed = 4.5f;
@@ -604,39 +448,32 @@ void NavigationDrawer::update(float dt) {
     if (m_isOpen) {
         m_slideAnim += animSpeed * dtSafe;
         if (m_slideAnim > 1.0f) m_slideAnim = 1.0f;
-    }
-    else {
+    } else {
         m_slideAnim -= animSpeed * dtSafe;
         if (m_slideAnim < 0.0f) m_slideAnim = 0.0f;
     }
 
     if (m_slideAnim > 0.0f && m_slideAnim < 1.0f) {
-        requestUIWakeup(0.05);
+        requestUIWakeup(0.016);
     }
 
     float scrollDiff = m_targetScrollY - m_scrollY;
     if (std::abs(scrollDiff) >= 0.5f) {
-        float factor = 1.0f - std::exp(-22.0f * dtSafe);
+        float factor = 1.0f - std::exp(-24.0f * dtSafe);
         m_scrollY += scrollDiff * factor;
-        requestUIWakeup(0.05);
+        requestUIWakeup(0.016);
     } else {
         m_scrollY = m_targetScrollY;
     }
 }
 
-/**
- * @brief Resolves panel sliding offset, scroll metrics, and children layout.
- * 
- * @param parentX Parent origin X coordinate in pixels.
- * @param parentY Parent origin Y coordinate in pixels.
- * @param parentW Parent allocated width in pixels.
- * @param parentH Parent allocated height in pixels.
- */
 void NavigationDrawer::doLayout(float parentX, float parentY, float parentW, float parentH) {
     x = std::round(parentX); 
     y = std::round(parentY); 
     width = std::round(parentW); 
     height = std::round(parentH);
+
+    if (m_slideAnim <= 0.001f && !m_isOpen) return;
 
     float easeOutCubic = 1.0f - std::pow(1.0f - m_slideAnim, 3.0f);
     float panelW = std::min(std::round(dp(m_panelWidthBase)), width - std::round(dp(48.0f)));
@@ -662,28 +499,12 @@ void NavigationDrawer::doLayout(float parentX, float parentY, float parentW, flo
     m_targetScrollY = std::clamp(std::round(m_targetScrollY), 0.0f, m_maxScrollY);
 }
 
-/**
- * @brief Processes mouse movement events across drawer panel.
- * 
- * @param mx Mouse X coordinate in window space.
- * @param my Mouse Y coordinate in window space.
- * @return True if event is consumed.
- */
 bool NavigationDrawer::handleMouseMove(float mx, float my) {
     if (m_slideAnim <= 0.001f) return false;
     ViewGroup::handleMouseMove(mx, my); 
     return true;
 }
 
-/**
- * @brief Processes mouse button clicks on drawer content or outside scrim.
- * 
- * @param button Mouse button index.
- * @param action Action type.
- * @param mx Mouse X coordinate in window space.
- * @param my Mouse Y coordinate in window space.
- * @return True if event is consumed.
- */
 bool NavigationDrawer::handleMouseButton(int button, int action, float mx, float my) {
     if (m_slideAnim <= 0.001f) return false;
     
@@ -701,15 +522,6 @@ bool NavigationDrawer::handleMouseButton(int button, int action, float mx, float
     return true;
 }
 
-/**
- * @brief Processes mouse wheel scrolling events inside the drawer panel.
- * 
- * @param mx Mouse X coordinate.
- * @param my Mouse Y coordinate.
- * @param ox Horizontal scroll offset.
- * @param oy Vertical scroll offset.
- * @return True if scroll event was consumed.
- */
 bool NavigationDrawer::handleScroll(float mx, float my, float ox, float oy) {
     if (m_slideAnim <= 0.001f) return false;
 
@@ -727,48 +539,55 @@ bool NavigationDrawer::handleScroll(float mx, float my, float ox, float oy) {
     if (!handled && m_maxScrollY > 0.0f) {
         m_targetScrollY -= oy * std::round(dp(48.0f));
         m_targetScrollY = std::clamp(std::round(m_targetScrollY), 0.0f, m_maxScrollY);
-        requestUIWakeup(0.05);
+        requestUIWakeup(0.016);
     }
 
     return true;
 }
 
-/**
- * @brief Renders the backdrop scrim overlay, drawer container surface, and child views.
- * 
- * @param renderer Reference to the Material UI shader renderer.
- * @param theme Reference to the active Material theme tokens.
- */
 void NavigationDrawer::render(MaterialShader& renderer, MaterialTheme& theme) {
     if (m_slideAnim <= 0.001f) return;
 
-    GLint viewport[4];
-    glGetIntegerv(GL_VIEWPORT, viewport);
-    GLint winHeight = viewport[3];
+    GLFWwindow* win = glfwGetCurrentContext();
+    int fbW = 0, fbH = 0;
+    if (win) glfwGetFramebufferSize(win, &fbW, &fbH);
+    if (fbH <= 0) return;
 
     float easeOutCubic = 1.0f - std::pow(1.0f - m_slideAnim, 3.0f);
     float panelW = std::min(std::round(dp(m_panelWidthBase)), width - std::round(dp(48.0f)));
     float slideDist = (m_animStyle == DrawerAnimStyle::Slide) ? panelW : std::round(dp(64.0f));
     float currentPanelX = std::round(x - slideDist * (1.0f - easeOutCubic));
 
+    // 1. Scrim overlay
     M3Color scrimColor = { 0.0f, 0.0f, 0.0f, 0.32f * m_slideAnim };
     renderer.drawM3UI(x, y, width, height, 0.0f, 0.0f, 0.0f, 0.0f, scrimColor);
 
+    // 2. Drawer background panel
     float bgFade = (m_animStyle == DrawerAnimStyle::SharedAxis) ? std::pow(m_slideAnim, 1.8f) : 1.0f;
     float bgRadius = std::round(dp(16.0f));
     M3Color surfaceColor = theme.surfaceContainerLow;
     surfaceColor.a *= bgFade;
     renderer.drawM3UI(currentPanelX, y, panelW, height, 0.0f, bgRadius, bgRadius, 0.0f, surfaceColor);
 
+    // 3. Main scissor clip for drawer content
     glEnable(GL_SCISSOR_TEST);
     glScissor(
         (GLint)std::max(0.0f, currentPanelX),
-        (GLint)std::round(winHeight - y - height),
+        (GLint)std::round((float)fbH - y - height),
         (GLint)panelW,
         (GLint)height
     );
 
-    ViewGroup::render(renderer, theme);
+    // 4. Viewport culling (skip children outside drawer bounds)
+    float viewTop = y;
+    float viewBottom = y + height;
+
+    for (View* child : children) {
+        if (child->y + child->height < viewTop || child->y > viewBottom) {
+            continue;
+        }
+        child->render(renderer, theme);
+    }
 
     glDisable(GL_SCISSOR_TEST);
 }
