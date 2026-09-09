@@ -87,50 +87,6 @@ Engineered for desktop applications, embedded systems, and custom rendering engi
 
 ---
 
-## Structure
-
-```text
-├── layout/
-│   ├── View.hpp / View.cpp               # Base View lifecycle, event routing, and dp scaling
-│   └── LinearLayout.hpp / LinearLayout.cpp # Linear box layout manager (Horizontal / Vertical)
-├── theme/
-│   └── MaterialTheme.hpp / .cpp            # M3 color tokens, hex parsers, and lerp utilities
-├── shader/
-│   ├── MaterialShader.hpp / .cpp         # GPU batch renderer, SDF pipeline, and FreeType text
-│   ├── Icon.hpp / Icon.cpp               # Procedural M3 vector icons and asset paths
-│   └── TextureLoader.hpp / .cpp          # Image and texture management via stb_image
-├── components/
-│   ├── MaterialButton.hpp / .cpp
-│   ├── MaterialCard.hpp / .cpp
-│   ├── MaterialCheckbox.hpp / .cpp
-│   ├── MaterialColorPicker.hpp / .cpp
-│   ├── MaterialDatePicker.hpp / .cpp
-│   ├── MaterialDialog.hpp / .cpp
-│   ├── MaterialDropdown.hpp / .cpp
-│   ├── MaterialFAB.hpp / .cpp
-│   ├── MaterialIconButton.hpp / .cpp
-│   ├── MaterialLoading.hpp / .cpp
-│   ├── MaterialPieChart.hpp / .cpp
-│   ├── MaterialPrimaryTab.hpp / .cpp
-│   ├── MaterialSearch.hpp / .cpp
-│   ├── MaterialSegmentedButton.hpp / .cpp
-│   ├── MaterialSwitch.hpp / .cpp
-│   ├── MediaSlider.hpp / .cpp
-│   ├── NavigationBar.hpp / .cpp
-│   ├── NavigationDrawer.hpp / .cpp
-│   ├── NotificationOverlay.hpp / .cpp
-│   ├── PageContainer.hpp / .cpp
-│   ├── RadioButton.hpp / .cpp
-│   ├── SkeletonText.hpp / MaterialSkeletonText.cpp
-│   ├── Snackbar.hpp / .cpp
-│   ├── StarrySkyFormation.hpp / .cpp
-│   ├── StarrySkyNotification.hpp / .cpp
-│   ├── TextField.hpp / .cpp
-│   ├── TextView.hpp / .cpp
-│   └── TimePickerDial.hpp / .cpp
-└── CMakeLists.txt
-```
-
 ## 🛠️ Build Instructions
 ### The build system relies on standard CMake with in-tree vendored dependencies.
 
