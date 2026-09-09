@@ -2,7 +2,8 @@
  * @file View.cpp
  * @brief Implementation of fundamental UI view hierarchy with continuous subpixel layout.
  * 
- * Part of the Material 3 OpenGL ES Component Library.
+ * Implements the View and ViewGroup classes, including layout calculations,
+ * event handling, animation updates, and rendering dispatch with viewport culling.
  * 
  * @author Vectorted
  * @repository https://github.com/Vectorted
@@ -16,6 +17,8 @@
 #include <cmath> 
 
 float g_dpiScale = 1.0f;
+
+// --- View implementation ---
 
 View::View(float x, float y, float w, float h)
     : x(x), y(y), width(w), height(h), layout_width(w), layout_height(h) {
@@ -71,18 +74,18 @@ void View::doLayout(float parentX, float parentY, float parentW, float parentH) 
     if (isGone()) return;
 
     float wpx = 0.0f;
-    if (layout_width == MATCH_PARENT) { 
+    if (layout_width == View::MATCH_PARENT) { 
         wpx = std::max(0.0f, parentW - dp(margin_left) - dp(margin_right)); 
-    } else if (layout_width == WRAP_CONTENT) { 
+    } else if (layout_width == View::WRAP_CONTENT) { 
         wpx = dp(getPreferredWidth()); 
     } else if (layout_width >= 0.0f) { 
         wpx = dp(layout_width); 
     }
 
     float hpx = 0.0f;
-    if (layout_height == MATCH_PARENT) { 
+    if (layout_height == View::MATCH_PARENT) { 
         hpx = std::max(0.0f, parentH - dp(margin_top) - dp(margin_bottom)); 
-    } else if (layout_height == WRAP_CONTENT) { 
+    } else if (layout_height == View::WRAP_CONTENT) { 
         hpx = dp(getPreferredHeight()); 
     } else if (layout_height >= 0.0f) { 
         hpx = dp(layout_height); 
@@ -135,6 +138,8 @@ bool View::handleKey(int key, int action) { return false; }
 bool View::handleChar(unsigned int codepoint) { return false; }
 bool View::isInside(float px, float py) { return px >= x && px <= x + width && py >= y && py <= y + height; }
 
+// --- ViewGroup implementation ---
+
 ViewGroup::~ViewGroup() { 
     for (auto* c : children) {
         delete c; 
@@ -184,11 +189,11 @@ void ViewGroup::doLayout(float parentX, float parentY, float parentW, float pare
             float maxAllowedW = std::max(0.0f, innerW - dp(child->margin_left) - dp(child->margin_right));
             float maxAllowedH = std::max(0.0f, innerH - dp(child->margin_top) - dp(child->margin_bottom));
 
-            float childW = (child->layout_width == MATCH_PARENT) ? maxAllowedW : 
+            float childW = (child->layout_width == View::MATCH_PARENT) ? maxAllowedW : 
                            (child->layout_width >= 0.0f ? std::min(dp(child->layout_width), maxAllowedW) : 
                            std::min(dp(child->getPreferredWidth()), maxAllowedW));
 
-            float childH = (child->layout_height == MATCH_PARENT) ? maxAllowedH : 
+            float childH = (child->layout_height == View::MATCH_PARENT) ? maxAllowedH : 
                            (child->layout_height >= 0.0f ? std::min(dp(child->layout_height), maxAllowedH) : 
                            std::min(dp(child->getPreferredHeight()), maxAllowedH));
 
@@ -222,6 +227,7 @@ void ViewGroup::render(MaterialShader& renderer, MaterialTheme& theme) {
     if (!win) return;
     glfwGetFramebufferSize(win, &fbW, &fbH);
 
+    // Viewport culling: skip children outside the visible area with a safety margin.
     float safeMargin = dp(150.0f);
     float viewTop = -safeMargin;
     float viewBottom = (float)fbH + safeMargin;
