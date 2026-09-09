@@ -327,10 +327,10 @@ public:
         });
 
         snackbar = new Snackbar();
-        materialDialog = new MaterialDialog(
-            "Apply Configuration Changes?", 
-            "Are you sure you want to hot-reload the rendering architecture? This will update active color tokens and layout parameters."
-        );
+        materialDialog = new MaterialDialog();
+        materialDialog->setTitle("Apply Configuration Changes?");
+        materialDialog->setContent("Are you sure you want to hot-reload the rendering architecture? This will update active color tokens and layout parameters.");
+        materialDialog->setLayoutParams(dp(300), View::WRAP_CONTENT);
         notificationOverlay = new NotificationOverlay();
         navigationDrawer = new NavigationDrawer();  
 
@@ -929,39 +929,77 @@ public:
         View* title9 = Components::textView().text("9. Sliders & Continuous Progress Indicators").textSize(16.0f).textColor("primary").build(); 
         scrollList->addView(title9);
         
+        CardView* sliderCard = Components::card()
+            .type(CardType::Outlined)
+            .cornerRadius(20.0f)
+            .layoutWidth(MATCH_PARENT)
+            .layoutHeight(WRAP_CONTENT)
+            .padding(24.0f, 24.0f, 24.0f, 24.0f)
+            .build();
+
         LinearLayout* sliderCol = new LinearLayout(LinearLayout::Orientation::VERTICAL); 
         sliderCol->setLayoutParams(MATCH_PARENT, WRAP_CONTENT); 
-        sliderCol->setGap(18.0f); 
-        sliderCol->setPadding(0.0f, 8.0f, 0.0f, 16.0f);
-        
-        MediaSlider* standardSlider = new MediaSlider(0.85f); 
-        standardSlider->layout_width = MATCH_PARENT; 
-        standardSlider->setStyle(SliderStyle::Standard);
-        
-        MediaSlider* waveSlider = new MediaSlider(0.72f);     
+        sliderCol->setGap(20.0f); 
+
+        sliderCol->addView(Components::textView().text("Material 3 Capsule Media Slider (with Gap, Handle Bar & Time Labels):").textSize(13.0f).textColor("secondary").build());
+        MediaSlider* m3CapsuleTimeSlider = new MediaSlider(0.72f);
+        m3CapsuleTimeSlider->layout_width = MATCH_PARENT;
+        m3CapsuleTimeSlider->setStyle(SliderStyle::Thick)
+                           ->setShowTime(true)
+                           ->setTime(180.0f, 202.0f) // 3:00 / 3:22
+                           ->setOnValueChanged([sb](float val) {
+                               int cur = static_cast<int>(val * 202.0f);
+                               char buf[32];
+                               std::snprintf(buf, sizeof(buf), "Seek: %d:%02d / 3:22", cur / 60, cur % 60);
+                               sb->show(buf, "SEEK", nullptr, 1.5f);
+                           });
+        sliderCol->addView(m3CapsuleTimeSlider);
+
+        sliderCol->addView(Components::textView().text("Material 3 Capsule Slider (Discrete Handle & Gap):").textSize(13.0f).textColor("secondary").build());
+        MediaSlider* m3CapsuleSlider = new MediaSlider(0.48f);
+        m3CapsuleSlider->layout_width = MATCH_PARENT;
+        m3CapsuleSlider->setStyle(SliderStyle::Thick);
+        sliderCol->addView(m3CapsuleSlider);
+
+        sliderCol->addView(Components::textView().text("Animated Squiggly Waveform Slider (Media Playback Active):").textSize(13.0f).textColor("secondary").build());
+        MediaSlider* waveSlider = new MediaSlider(0.65f);     
         waveSlider->layout_width = MATCH_PARENT; 
         waveSlider->setStyle(SliderStyle::Squiggly); 
         waveSlider->setPlaying(true);
-        
-        MediaSlider* thickSlider = new MediaSlider(0.48f);    
-        thickSlider->layout_width = 400.0f; 
-        thickSlider->setStyle(SliderStyle::Thick);
-        
+        sliderCol->addView(waveSlider);
+
+        sliderCol->addView(Components::textView().text("Standard Continuous Slider (Thin Track + Circular Grab Thumb):").textSize(13.0f).textColor("secondary").build());
+        MediaSlider* standardSlider = new MediaSlider(0.85f); 
+        standardSlider->layout_width = MATCH_PARENT; 
+        standardSlider->setStyle(SliderStyle::Standard);
+        sliderCol->addView(standardSlider);
+
+        sliderCol->addView(Components::textView().text("Material 3 Discrete Slider (Tick Marks + Snap to Steps + Value Tooltip):").textSize(13.0f).textColor("secondary").build());
+        MediaSlider* discreteSlider = new MediaSlider(0.4f);
+        discreteSlider->layout_width = MATCH_PARENT;
+        discreteSlider->setStyle(SliderStyle::Thick)
+                      ->setDiscreteConfig(5, true, true, true)
+                      ->setOnValueChanged([sb](float val) {
+                          int step = static_cast<int>(std::round(val * 5.0f));
+                          sb->show("Step selected: " + std::to_string(step) + " / 5", "OK", nullptr, 1.5f);
+                      });
+        sliderCol->addView(discreteSlider);
+
+        sliderCol->addView(Components::textView().text("Linear Progress Indicator (Read-only):").textSize(13.0f).textColor("secondary").build());
         MediaSlider* linearProgress = new MediaSlider(0.55f); 
         linearProgress->layout_width = MATCH_PARENT; 
         linearProgress->setStyle(SliderStyle::LinearProgress);
-        
-        MediaSlider* disabledSlider = new MediaSlider(0.20f); 
+        sliderCol->addView(linearProgress);
+
+        sliderCol->addView(Components::textView().text("Disabled Slider:").textSize(13.0f).textColor("secondary").build());
+        MediaSlider* disabledSlider = new MediaSlider(0.35f); 
         disabledSlider->layout_width = MATCH_PARENT; 
-        disabledSlider->setStyle(SliderStyle::Squiggly); 
+        disabledSlider->setStyle(SliderStyle::Thick); 
         disabledSlider->setEnabled(false);
-        
-        sliderCol->addView(standardSlider); 
-        sliderCol->addView(waveSlider); 
-        sliderCol->addView(thickSlider); 
-        sliderCol->addView(linearProgress); 
         sliderCol->addView(disabledSlider);
-        scrollList->addView(sliderCol);
+
+        sliderCard->addView(sliderCol);
+        scrollList->addView(sliderCard);
 
         View* title10 = Components::textView().text("10. Virtualized Recycler List View (Extreme Node Pool)").textSize(16.0f).textColor("primary").build(); 
         scrollList->addView(title10);
