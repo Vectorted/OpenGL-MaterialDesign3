@@ -1,9 +1,14 @@
 /**
  * @file IoJson.hpp
  * @brief Interoperability bridge between Io::File and JsonObject/JsonArray.
- * @author Vectorted (github.com/Vectorted)
- * @details Provides seamless conversions, directory-to-JSON utilities,
- *          and direct file-based JSON reading and writing.
+ * 
+ * Provides convenient functions to read/write JSON from/to files,
+ * convert File objects to JSON representations, and list directories as JSON.
+ * 
+ * @author Vectorted
+ * @repository https://github.com/Vectorted
+ * @license Open-source
+ * @copyright Copyright (c) 2026 Vectorted. All rights reserved.
  */
 
 #ifndef IO_JSON_HPP
@@ -12,13 +17,16 @@
 #include "Io.hpp"
 #include "Json.hpp"
 
+/**
+ * @namespace IoJsonExt
+ * @brief Extension functions bridging Io and JSON.
+ */
 namespace IoJsonExt {
 
     /**
-     * @brief Converts file metadata and attributes into a JsonObject.
-     * @param file The target Io::File instance to inspect.
-     * @return A JsonObject containing path, name, exists, isFile, isDirectory,
-     *         size, lastModified, canRead, and canWrite properties.
+     * @brief Converts a File object to a JSON object with metadata.
+     * @param file The File to inspect.
+     * @return JsonObject containing path, name, exists, isFile, isDirectory, size, lastModified, canRead, canWrite.
      */
     inline JsonObject toJsonObject(const Io::File& file) {
         JsonObject obj;
@@ -37,26 +45,40 @@ namespace IoJsonExt {
     }
     
     /**
-     * @brief Reads a text file and parses its content directly into a JsonObject.
-     * @param file The target file to read from.
-     * @param outJson The output JsonObject to receive the parsed structure.
-     * @return true if the file read succeeds; false otherwise.
+     * @brief Reads a JSON file and parses it into a JsonObject.
+     * @param file The file to read.
+     * @param outJson Output JsonObject.
+     * @return true on success (file exists, content valid, and parsed object is not null unless literal "null").
      */
     inline bool readJson(const Io::File& file, JsonObject& outJson) {
         std::string content;
         if (!file.read(content, IoMode::Text)) {
             return false;
         }
+        if (content.empty()) return false;
+
         outJson = JsonObject::parse(content);
+
+        // If content is not the literal "null", but parsing yields null, treat as parse failure.
+        bool isLiteralNull = false;
+        for (char c : content) {
+            if (!std::isspace(static_cast<unsigned char>(c))) {
+                if (c == 'n') isLiteralNull = true;
+                break;
+            }
+        }
+        if (outJson.isNull() && !isLiteralNull) {
+            return false;
+        }
         return true;
     }
 
     /**
-     * @brief Serializes a JsonObject and writes it directly to the target file.
-     * @param file The target file to write to.
-     * @param json The JsonObject to serialize.
-     * @param format Formatting style (e.g. Compact, Pretty2, Pretty4).
-     * @return true if write operation succeeds; false otherwise.
+     * @brief Writes a JsonObject to a file.
+     * @param file Destination file.
+     * @param json JsonObject to write.
+     * @param format JSON formatting style.
+     * @return true on success.
      */
     inline bool writeJson(const Io::File& file, const JsonObject& json, JsonFormat format = JsonFormat::Pretty2) {
         std::string content = json.toJson(format);
@@ -64,9 +86,9 @@ namespace IoJsonExt {
     }
 
     /**
-     * @brief Lists all entry names in a directory as a JsonArray of strings.
-     * @param dir The directory to traverse.
-     * @return A JsonArray containing file and folder names (e.g., ["a.txt", "sub"]).
+     * @brief Lists directory entry names as a JSON array of strings.
+     * @param dir Directory File.
+     * @return JsonArray of entry names (excluding "." and "..").
      */
     inline JsonArray listJson(const Io::File& dir) {
         JsonArray arr;
@@ -77,10 +99,10 @@ namespace IoJsonExt {
     }
 
     /**
-     * @brief Lists all entries in a directory as paths or detailed metadata objects.
-     * @param dir The directory to traverse.
-     * @param detailed If true, returns an array of metadata objects; if false, returns an array of path strings.
-     * @return A JsonArray containing paths or detailed object representations.
+     * @brief Lists directory entries as a JSON array of paths or detailed objects.
+     * @param dir Directory File.
+     * @param detailed If true, each entry is a JSON object with metadata; otherwise, just the path string.
+     * @return JsonArray of entries.
      */
     inline JsonArray listFilesJson(const Io::File& dir, bool detailed = false) {
         JsonArray arr;
@@ -96,21 +118,21 @@ namespace IoJsonExt {
 } // namespace IoJsonExt
 
 /**
- * @brief Appends a File path value into an object by key.
- * @param obj The JsonObject to modify.
- * @param key The property key.
- * @param file The File whose path will be stored.
- * @return Reference to the updated JsonObject.
+ * @brief Convenience overload to put a File object into a JsonObject as a string path.
+ * @param obj Target JsonObject.
+ * @param key Key name.
+ * @param file File to store.
+ * @return Reference to the JsonObject for chaining.
  */
 inline JsonObject& putFile(JsonObject& obj, const std::string& key, const Io::File& file) {
     return obj.put(key, file.getPath());
 }
 
 /**
- * @brief Appends a File path value into an array node.
- * @param arr The JsonArray (JsonObject) to append to.
- * @param file The File whose path will be appended.
- * @return Reference to the updated array node.
+ * @brief Convenience overload to put a File into a JsonArray (as path string).
+ * @param arr Target JsonArray.
+ * @param file File to store.
+ * @return Reference to the JsonArray for chaining.
  */
 inline JsonObject& putFile(JsonObject& arr, const Io::File& file) {
     return arr.put(file.getPath());
@@ -118,55 +140,54 @@ inline JsonObject& putFile(JsonObject& arr, const Io::File& file) {
 
 /**
  * @class IoJson
- * @brief Static utility facade for high-level Io and Json interoperability.
- * @author Vectorted (github.com/Vectorted)
+ * @brief Static utility class bridging Io files and JSON operations.
  */
 class IoJson {
 public:
     /**
-     * @brief Directly parses a file into a JsonObject.
-     * @param file The target file.
-     * @param out The destination JsonObject.
-     * @return true on success, false on read failure.
+     * @brief Reads a JSON file and parses it.
+     * @param file File to read.
+     * @param out Output JsonObject.
+     * @return true on success.
      */
     static bool read(const Io::File& file, JsonObject& out) {
         return IoJsonExt::readJson(file, out);
     }
 
     /**
-     * @brief Writes a JsonObject directly to a file in specified format.
-     * @param file The target file.
-     * @param json The JsonObject instance.
-     * @param format Serialization formatting option.
-     * @return true on success, false on write failure.
+     * @brief Writes a JsonObject to a file.
+     * @param file Destination file.
+     * @param json JsonObject to write.
+     * @param format JSON formatting style.
+     * @return true on success.
      */
     static bool write(const Io::File& file, const JsonObject& json, JsonFormat format = JsonFormat::Pretty2) {
         return IoJsonExt::writeJson(file, json, format);
     }
     
     /**
-     * @brief Gathers full file attributes as a JsonObject.
-     * @param file The target file.
-     * @return JsonObject populated with detailed file attributes.
+     * @brief Returns a JSON object describing a file's metadata.
+     * @param file File to inspect.
+     * @return JsonObject with metadata.
      */
     static JsonObject inspect(const Io::File& file) {
         return IoJsonExt::toJsonObject(file);
     }
 
     /**
-     * @brief Traverses a directory and returns an array of entry names.
-     * @param dir The target directory.
-     * @return JsonArray populated with string names.
+     * @brief Lists directory names as JSON array.
+     * @param dir Directory.
+     * @return JsonArray of names.
      */
     static JsonArray list(const Io::File& dir) {
         return IoJsonExt::listJson(dir);
     }
 
     /**
-     * @brief Traverses a directory and returns an array of paths or metadata objects.
-     * @param dir The target directory.
-     * @param detailed If true, entries are objects with full stats; otherwise string paths.
-     * @return JsonArray containing either paths or JSON objects.
+     * @brief Lists directory entries as JSON array of paths or detailed objects.
+     * @param dir Directory.
+     * @param detailed If true, include full metadata.
+     * @return JsonArray.
      */
     static JsonArray listFiles(const Io::File& dir, bool detailed = false) {
         return IoJsonExt::listFilesJson(dir, detailed);
