@@ -18,24 +18,6 @@ Engineered for desktop applications, embedded systems, and custom rendering engi
 </p>
 
 ---
-
-## 📑 Table of Contents
-
-- [🖼️ UI Showcase](#-ui-showcase)
-- [🏛️ Key Architecture Highlights](#️-key-architecture-highlights)
-- [📦 Component Showcase](#-component-showcase)
-  - [1. Actions & Inputs](#1-actions--inputs)
-  - [2. Navigation & Containers](#2-navigation--containers)
-  - [3. Feedback & Indicators](#3-feedback--indicators)
-  - [4. Media, Data & Complex Pickers](#4-media-data--complex-pickers)
-- [Directory Structure](#-directory-structure)
-- [🛠️ Build & Installation](#️-build--installation)
-  - [MSVC Build (Visual Studio)](#msvc-build-visual-studio)
-  - [MinGW-w64 Build (GCC/Clang)](#mingw-w64-build-gccclang)
-- [🚀 Quick Start (Minimal Activity Example)](#start-designing-your-first-awesome-ui)
-- [📄 License & Credits](#-license--credits)
-
----
 ## 🛠️ Build Instructions
 ### The build system relies on standard CMake with in-tree vendored dependencies.
 
